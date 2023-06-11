@@ -1,14 +1,117 @@
-import numpy as xp
-import scipy.ndimage as ndi
+import torch
 
-#import cupy as xp
-#import cupyx.scipy.ndimage as ndi
+import cupy as xp
+import cupy as cp
+import cupyx.scipy.ndimage as ndi
 
-from parallelproj.operators import CompositeLinearOperator, ElementwiseMultiplicationOperator, GaussianFilterOperator
+from parallelproj.operators import CompositeLinearOperator, ElementwiseMultiplicationOperator, GaussianFilterOperator, LinearOperator
 from parallelproj.projectors import ParallelViewProjector2D
 from parallelproj.utils import tonumpy
 
 import matplotlib.pyplot as plt
+
+
+class LinearOperatorForwardLayer(torch.autograd.Function):
+    """forward layer mapping using a custom linear operator
+
+    We can implement our own custom autograd Functions by subclassing
+    torch.autograd.Function and implementing the forward and backward passes
+    which operate on Tensors.
+    """
+
+    @staticmethod
+    def forward(ctx, x, operator: LinearOperator):
+        """
+        In the forward pass we receive a Tensor containing the input and return
+        a Tensor containing the output. ctx is a context object that can be used
+        to stash information for backward computation.
+        """
+
+        ctx.set_materialize_grads(False)
+        ctx.operator = operator
+
+        # convert pytorch input tensor into cupy array
+        cp_x = cp.ascontiguousarray(cp.from_dlpack(x.detach()))
+
+        # a custom function that maps from cupy array to cupy array
+        cp_y = operator(cp_x)
+
+        return torch.from_dlpack(cp_y)
+
+    @staticmethod
+    def backward(ctx, grad_output: torch.Tensor):
+        """
+        In the backward pass we receive a Tensor containing the gradient of the loss
+        with respect to the output, and we need to compute the gradient of the loss
+        with respect to the input.
+
+        For details on how to implement the backward pass, see
+        https://pytorch.org/docs/stable/notes/extending.html#how-to-use
+        """
+
+        if grad_output is None:
+            return None, None
+        else:
+            operator = ctx.operator
+
+            # convert torch array to cupy array
+            cp_grad_output = cp.from_dlpack(grad_output.detach())
+
+            # since forward takes three input arguments (x, projector, subset)
+            # we have to return three arguments (the latter is None)
+            return torch.from_dlpack(operator.adjoint(cp_grad_output)), None
+
+
+class LinearOperatorAdjointLayer(torch.autograd.Function):
+    """ adjoint of the LinearOperatorForwardLayer
+    
+    We can implement our own custom autograd Functions by subclassing
+    torch.autograd.Function and implementing the forward and backward passes
+    which operate on Tensors.
+    """
+
+    @staticmethod
+    def forward(ctx, x, operator: LinearOperator):
+        """
+        In the forward pass we receive a Tensor containing the input and return
+        a Tensor containing the output. ctx is a context object that can be used
+        to stash information for backward computation.
+        """
+
+        ctx.set_materialize_grads(False)
+        ctx.operator = operator
+
+        # convert pytorch input tensor into cupy array
+        cp_x = cp.ascontiguousarray(cp.from_dlpack(x.detach()))
+
+        # a custom function that maps from cupy array to cupy array
+        cp_y = operator.adjoint(cp_x)
+
+        return torch.from_dlpack(cp_y)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        """
+        In the backward pass we receive a Tensor containing the gradient of the loss
+        with respect to the output, and we need to compute the gradient of the loss
+        with respect to the input.
+
+        For details on how to implement the backward pass, see
+        https://pytorch.org/docs/stable/notes/extending.html#how-to-use
+        """
+
+        if grad_output is None:
+            return None, None
+        else:
+            operator = ctx.operator
+
+            # convert torch array to cupy array
+            cp_grad_output = cp.from_dlpack(grad_output.detach())
+
+            # since forward takes three input arguments (x, projector, subset)
+            # we have to return three arguments (the latter is None)
+            return torch.from_dlpack(operator(cp_grad_output, )), None
+
 
 #----------------------------------------------------------------------
 #----------------------------------------------------------------------
@@ -46,9 +149,6 @@ r = xp.linspace(-200, 200, num_rad, dtype=xp.float32)
 
 projector = ParallelViewProjector2D(img_shape, r, num_phi, scanner_R,
                                     img_origin, voxel_size, xp)
-
-fig = projector.show_views(image=img, cmap='Greys')
-fig.show()
 
 #----------------------------------------------------------------------
 #----------------------------------------------------------------------
@@ -97,22 +197,37 @@ data = xp.random.poisson(img_fwd + contamination)
 # do ack projection (the adjoint of the forward projection)
 data_back = fwd_model.adjoint(data)
 
+# convert the data and contamination sinograms to torch tensor
+contamination_t = torch.from_dlpack(contamination)
+data_t = torch.from_dlpack(data)
+
 #----------------------------------------------------------------------
 #----------------------------------------------------------------------
 #----------------------------------------------------------------------
 
-# run MLEM
+# run torch MLEM using torch layers
+
 num_iter = 400
 
-x0 = xp.ones(img.shape, dtype=xp.float32)
-x = x0.copy()
+dtype = torch.float32
+device = torch.device("cuda:0")
 
-sens_image = fwd_model.adjoint(xp.ones(fwd_model.out_shape, dtype=xp.float32))
+fwd_layer = LinearOperatorForwardLayer.apply
+adjoint_layer = LinearOperatorAdjointLayer.apply
+
+x0_t = torch.ones(fwd_model.in_shape, device=device, dtype=dtype)
+x_t = torch.clone(x0_t)
+
+sens_image_t = adjoint_layer(
+    torch.ones(fwd_model.out_shape, dtype=dtype, device=device), fwd_model)
 
 for i in range(num_iter):
     print(f'it {(i+1):04} / {num_iter:04}', end='\r')
-    exp = fwd_model(x) + contamination
-    x *= (fwd_model.adjoint(data / exp) / sens_image)
+    exp_t = fwd_layer(x_t, fwd_model) + contamination_t
+    x_t *= (adjoint_layer(data_t / exp_t, fwd_model) / sens_image_t)
+
+# convert recon to cupy array
+x = cp.ascontiguousarray(cp.from_dlpack(x_t.detach()))
 
 #----------------------------------------------------------------------
 #----------------------------------------------------------------------
