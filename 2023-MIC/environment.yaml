@@ -1,0 +1,12 @@
+name: 2023-MIC-DL-recon
+
+channels:
+  - conda-forge
+
+dependencies:
+  - parallelproj >=1.4
+  - matplotlib
+  - scipy
+  - ipython
+  - pytorch >= 2.0
+  - cupy

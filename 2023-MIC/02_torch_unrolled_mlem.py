@@ -1,3 +1,5 @@
+"""example that shows how to implement an unrolled MLEM network in pytorch"""
+
 import torch
 
 import cupy as xp

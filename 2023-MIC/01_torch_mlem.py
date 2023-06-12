@@ -1,3 +1,5 @@
+"""example that shows how to MLEM reconstruction on torch GPU arrays using a custom pytorch layer"""
+
 import torch
 
 import cupy as xp

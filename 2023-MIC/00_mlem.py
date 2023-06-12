@@ -1,8 +1,10 @@
-import numpy as xp
-import scipy.ndimage as ndi
+"""example that shows how to MLEM reconstruction on cupy GPU arrays"""
 
-#import cupy as xp
-#import cupyx.scipy.ndimage as ndi
+#import numpy as xp
+#import scipy.ndimage as ndi
+
+import cupy as xp
+import cupyx.scipy.ndimage as ndi
 
 from parallelproj.operators import CompositeLinearOperator, ElementwiseMultiplicationOperator, GaussianFilterOperator
 from parallelproj.projectors import ParallelViewProjector2D
