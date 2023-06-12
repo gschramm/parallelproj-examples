@@ -141,13 +141,14 @@ img[:, (n1 // 4):(n1 // 3), (n2 // 4):(n2 // 3)] = 3
 # setup the coordinates for projections along parallel views
 num_rad = 223
 num_phi = 190
+# "radius" of the scanner in mm
 scanner_R = 350.
 
 # radial coordinates of the projection views in mm
 r = xp.linspace(-200, 200, num_rad, dtype=xp.float32)
-# "radius" of the scanner in mm
+view_angles = xp.linspace(0, xp.pi, num_phi, endpoint=False, dtype=xp.float32)
 
-projector = ParallelViewProjector2D(img_shape, r, num_phi, scanner_R,
+projector = ParallelViewProjector2D(img_shape, r, view_angles, scanner_R,
                                     img_origin, voxel_size, xp)
 
 #----------------------------------------------------------------------
@@ -170,16 +171,16 @@ sens_sino = xp.full(projector.out_shape, 1., dtype=xp.float32)
 # projector and multiplication by sensitivity
 
 image_space_filter = GaussianFilterOperator(projector.in_shape,
-                                            ndi,
+                                            ndi, xp,
                                             sigma=4.5 / (2.35 * voxel_size))
 
-sens_operator = ElementwiseMultiplicationOperator(sens_sino * att_sino)
+sens_operator = ElementwiseMultiplicationOperator(sens_sino * att_sino, xp)
 
 fwd_model = CompositeLinearOperator(
     (sens_operator, projector, image_space_filter))
 
-fwd_model.adjointness_test(xp, verbose=True)
-fwd_model_norm = fwd_model.norm(xp)
+fwd_model.adjointness_test(verbose=True)
+fwd_model_norm = fwd_model.norm()
 
 #----------------------------------------------------------------------
 #----------------------------------------------------------------------
