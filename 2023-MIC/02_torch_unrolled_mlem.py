@@ -1,5 +1,7 @@
 """example that shows how to implement an unrolled MLEM network in pytorch"""
 
+#TODO: processing of mini batches
+
 import torch
 
 import cupy as xp
@@ -120,26 +122,28 @@ class LinearOperatorAdjointLayer(torch.autograd.Function):
 #----------------------------------------------------------------------
 
 
-class UnrolledMLEMNet(torch.nn.Module):
+class PoissonEMModule(torch.nn.Module):
 
-    def __init__(self, num_layers: int) -> None:
-        self._num_layers = num_layers
+    def __init__(self, fwd_model: LinearOperator,
+                data_t: torch.Tensor,
+                contamination_t: torch.Tensor,
+                sens_image_t: torch.Tensor,
+                dtype = torch.float32,
+                device = 'cuda:0') -> torch.Tensor:
+        super().__init__()
         self._fwd_layer = LinearOperatorForwardLayer.apply
         self._adjoint_layer = LinearOperatorAdjointLayer.apply
+        self._fwd_model = fwd_model
+        self._data_t = data_t
+        self._contamination_t = contamination_t
+        self._sens_image_t = sens_image_t
+        self._dtype = dtype
+        self._device = device
 
-    def forward(self, x_t: torch.Tensor, fwd_model: LinearOperator,
-                data_t: torch.Tensor,
-                contamination_t: torch.Tensor) -> torch.Tensor:
-
-        sens_image_t = self._adjoint_layer(
-            torch.ones(fwd_model.out_shape, dtype=x_t.dtype,
-                       device=x_t.device), fwd_model)
-
-        for i in range(self._num_layers):
-            print(f'it {(i+1):04} / {num_iter:04}', end='\r')
-            exp_t = self._fwd_layer(x_t, fwd_model) + contamination_t
-            x_t *= (self._adjoint_layer(data_t / exp_t, fwd_model) /
-                    sens_image_t)
+    def forward(self, x_t: torch.Tensor) -> torch.Tensor:
+        exp_t = self._fwd_layer(x_t, fwd_model) + contamination_t
+        x_t *= (self._adjoint_layer(data_t / exp_t, fwd_model) /
+                self._sens_image_t)
 
         return x_t
 
@@ -247,10 +251,19 @@ device = torch.device("cuda:0")
 
 x0_t = torch.ones(fwd_model.in_shape, device=device, dtype=dtype)
 
-network = UnrolledMLEMNet(num_iter)
+sens_image = fwd_model.adjoint(cp.ones(fwd_model.out_shape, dtype=cp.float32))
+sens_image_t = torch.from_dlpack(sens_image)
+
+em_module = PoissonEMModule(fwd_model, data_t, contamination_t, sens_image_t)
+
+unrolled_MLEM_network = torch.nn.Sequential()
+
+# setup our unrolled MLEM network
+for i in range(num_iter):
+    unrolled_MLEM_network.add_module(f'EM_{i+1}', em_module)
 
 # do MLEM reconstruction by feeding the inital image through the unrolled MLEM network
-x_t = network.forward(x0_t, fwd_model, data_t, contamination_t)
+x_t = unrolled_MLEM_network.forward(x0_t)
 
 # convert recon to cupy array
 x = cp.ascontiguousarray(cp.from_dlpack(x_t.detach()))
