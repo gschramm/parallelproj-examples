@@ -1,6 +1,4 @@
-"""example that shows how to implement an unrolled MLEM network in pytorch"""
-
-#TODO: processing of mini batches
+"""example that shows how to implement an unrolled MLEM in pytorch using a mini batch of data"""
 
 import torch
 
@@ -20,11 +18,11 @@ class LinearOperatorForwardLayer(torch.autograd.Function):
 
     We can implement our own custom autograd Functions by subclassing
     torch.autograd.Function and implementing the forward and backward passes
-    which operate on Tensors.
+    which operate on mini batch tensors.
     """
 
     @staticmethod
-    def forward(ctx, x, operator: LinearOperator):
+    def forward(ctx, x: torch.Tensor, operator: LinearOperator):
         """
         In the forward pass we receive a Tensor containing the input and return
         a Tensor containing the output. ctx is a context object that can be used
@@ -34,11 +32,15 @@ class LinearOperatorForwardLayer(torch.autograd.Function):
         ctx.set_materialize_grads(False)
         ctx.operator = operator
 
+        num_batch = x.shape[0]
+
         # convert pytorch input tensor into cupy array
         cp_x = cp.ascontiguousarray(cp.from_dlpack(x.detach()))
+        cp_y = cp.zeros((num_batch, ) + operator.out_shape, dtype=cp.float32)
 
-        # a custom function that maps from cupy array to cupy array
-        cp_y = operator(cp_x)
+        # apply operator across mini batch
+        for i in range(cp_x.shape[0]):
+            cp_y[i, ...] = operator(cp_x[i, ...])
 
         return torch.from_dlpack(cp_y)
 
@@ -58,12 +60,21 @@ class LinearOperatorForwardLayer(torch.autograd.Function):
         else:
             operator = ctx.operator
 
+            num_batch = grad_output.shape[0]
+
             # convert torch array to cupy array
             cp_grad_output = cp.from_dlpack(grad_output.detach())
 
-            # since forward takes three input arguments (x, projector, subset)
-            # we have to return three arguments (the latter is None)
-            return torch.from_dlpack(operator.adjoint(cp_grad_output)), None
+            cp_x = cp.zeros((num_batch, ) + operator.in_shape,
+                            dtype=cp.float32)
+
+            # apply adjoint operator across mini batch
+            for i in range(cp_x.shape[0]):
+                cp_x[i, ...] = operator.adjoint(cp_grad_output[i, ...])
+
+            # since forward takes two input arguments (x, operator)
+            # we have to return two arguments (the latter is None)
+            return torch.from_dlpack(cp_x), None
 
 
 class LinearOperatorAdjointLayer(torch.autograd.Function):
@@ -71,7 +82,7 @@ class LinearOperatorAdjointLayer(torch.autograd.Function):
     
     We can implement our own custom autograd Functions by subclassing
     torch.autograd.Function and implementing the forward and backward passes
-    which operate on Tensors.
+    which operate on mini batch tensors.
     """
 
     @staticmethod
@@ -85,11 +96,16 @@ class LinearOperatorAdjointLayer(torch.autograd.Function):
         ctx.set_materialize_grads(False)
         ctx.operator = operator
 
+        num_batch = x.shape[0]
+
         # convert pytorch input tensor into cupy array
         cp_x = cp.ascontiguousarray(cp.from_dlpack(x.detach()))
 
-        # a custom function that maps from cupy array to cupy array
-        cp_y = operator.adjoint(cp_x)
+        cp_y = cp.zeros((num_batch, ) + operator.in_shape, dtype=cp.float32)
+
+        # apply operator across mini batch
+        for i in range(cp_x.shape[0]):
+            cp_y[i, ...] = operator.adjoint(cp_x[i, ...])
 
         return torch.from_dlpack(cp_y)
 
@@ -109,12 +125,21 @@ class LinearOperatorAdjointLayer(torch.autograd.Function):
         else:
             operator = ctx.operator
 
+            num_batch = grad_output.shape[0]
+
             # convert torch array to cupy array
             cp_grad_output = cp.from_dlpack(grad_output.detach())
 
-            # since forward takes three input arguments (x, projector, subset)
-            # we have to return three arguments (the latter is None)
-            return torch.from_dlpack(operator(cp_grad_output, )), None
+            cp_x = cp.zeros((num_batch, ) + operator.out_shape,
+                            dtype=cp.float32)
+
+            # apply adjoint operator across mini batch
+            for i in range(cp_x.shape[0]):
+                cp_x[i, ...] = operator(cp_grad_output[i, ...])
+
+            # since forward takes two input arguments (x, operator)
+            # we have to return two arguments (the latter is None)
+            return torch.from_dlpack(cp_x), None
 
 
 #----------------------------------------------------------------------
@@ -155,17 +180,11 @@ class PoissonEMModule(torch.nn.Module):
             minibatch of 3D images with dimension (batch_size, n0, n1, n2)
         """
 
-        y = torch.zeros_like(x)
+        exp = multiplicative_correction * self._fwd_layer(
+            x, self._projector) + additive_correction
 
-        # loop over the mini batch
-        for i in range(x.shape[0]):
-            # calculate the expectation for image i
-            exp = multiplicative_correction[i, ...] * self._fwd_layer(
-                x[i, ...], self._projector) + additive_correction[i, ...]
-
-            y[i, ...] = x[i, ...] * (self._adjoint_layer(
-                multiplicative_correction[i, ...] * data[i, ...] / exp,
-                self._projector) / adjoint_ones[i, ...])
+        y = x * (self._adjoint_layer(multiplicative_correction * data / exp,
+                                     self._projector) / adjoint_ones)
 
         return y
 
