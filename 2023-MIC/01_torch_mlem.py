@@ -1,4 +1,6 @@
-"""example that shows how to MLEM reconstruction on torch GPU arrays using a custom pytorch layer"""
+"""example that shows how to implement an unrolled MLEM network in pytorch"""
+
+#TODO: processing of mini batches
 
 import torch
 
@@ -6,7 +8,7 @@ import cupy as xp
 import cupy as cp
 import cupyx.scipy.ndimage as ndi
 
-from parallelproj.operators import CompositeLinearOperator, ElementwiseMultiplicationOperator, GaussianFilterOperator, LinearOperator
+from parallelproj.operators import CompositeLinearOperator, GaussianFilterOperator, LinearOperator
 from parallelproj.projectors import ParallelViewProjector2D
 from parallelproj.utils import tonumpy
 
@@ -119,6 +121,59 @@ class LinearOperatorAdjointLayer(torch.autograd.Function):
 #----------------------------------------------------------------------
 #----------------------------------------------------------------------
 
+
+class PoissonEMModule(torch.nn.Module):
+
+    def __init__(self, projector: LinearOperator) -> None:
+        super().__init__()
+        self._fwd_layer = LinearOperatorForwardLayer.apply
+        self._adjoint_layer = LinearOperatorAdjointLayer.apply
+        self._projector = projector
+
+    def forward(self, x: torch.Tensor, data: torch.Tensor,
+                multiplicative_correction: torch.Tensor,
+                additive_correction: torch.Tensor,
+                adjoint_ones: torch.Tensor) -> torch.Tensor:
+        """Poisson EM step
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            minibatch of 3D images with dimension (batch_size, n0, n1, n2)
+        data : torch.Tensor
+            emission data (batch_size, data_size)
+        multiplicative_correction : torch.Tensor
+            multiplicative corrections in forward model (batch_size, data_size)
+        additive_correction : torch.Tensor
+            additive corrections in forward model (batch_size, data_size)
+        adjoint_ones : torch.Tensor
+            adjoint applied to "ones" (sensitivity images) of size (batch_size, n0, n1, n2)
+
+        Returns
+        -------
+        torch.Tensor
+            minibatch of 3D images with dimension (batch_size, n0, n1, n2)
+        """
+
+        y = torch.zeros_like(x)
+
+        # loop over the mini batch
+        for i in range(x.shape[0]):
+            # calculate the expectation for image i
+            exp = multiplicative_correction[i, ...] * self._fwd_layer(
+                x[i, ...], self._projector) + additive_correction[i, ...]
+
+            y[i, ...] = x[i, ...] * (self._adjoint_layer(
+                multiplicative_correction[i, ...] * data[i, ...] / exp,
+                self._projector) / adjoint_ones[i, ...])
+
+        return y
+
+
+#----------------------------------------------------------------------
+#----------------------------------------------------------------------
+#----------------------------------------------------------------------
+
 # setup a test image
 
 # image dimensions
@@ -131,10 +186,14 @@ voxel_size = xp.array([2., 2., 2.]).astype(xp.float32)
 # image origin -> world coordinates of the [0,0,0] voxel
 img_origin = ((-xp.array(img_shape) / 2 + 0.5) * voxel_size).astype(xp.float32)
 
-# setup a random image
-img = xp.zeros((n0, n1, n2)).astype(xp.float32)
-img[:, (n1 // 4):((3 * n1) // 4), (n2 // 4):((3 * n2) // 4)] = 1
-img[:, (n1 // 4):(n1 // 3), (n2 // 4):(n2 // 3)] = 3
+# setup a 2 test images
+img1 = xp.zeros((n0, n1, n2)).astype(xp.float32)
+img1[:, (n1 // 4):((3 * n1) // 4), (n2 // 4):((3 * n2) // 4)] = 1
+img1[:, (n1 // 4):(n1 // 3), (n2 // 4):(n2 // 3)] = 3
+
+img2 = xp.zeros((n0, n1, n2)).astype(xp.float32)
+img2[:, :(n1 // 2), :(n2 // 2)] = 1
+img2[:, :(n1 // 8), :(n2 // 8)] = 2
 
 #----------------------------------------------------------------------
 #----------------------------------------------------------------------
@@ -159,11 +218,19 @@ projector = ParallelViewProjector2D(img_shape, r, view_angles, scanner_R,
 # generate the attenuation image and sinogram
 
 # the attenuation coefficients in 1/mm
-att_img = 0.01 * (img > 0).astype(xp.float32)
-att_sino = xp.exp(-projector(att_img))
+att_img1 = 0.01 * (img1 > 0).astype(xp.float32)
+att_sino1 = xp.exp(-projector(att_img1))
+
+att_img2 = 0.01 * (img2 > 0).astype(xp.float32)
+att_sino2 = xp.exp(-projector(att_img2))
 
 # generate a constant sensitivity sinogram
-sens_sino = xp.full(projector.out_shape, 1., dtype=xp.float32)
+sens_sino1 = xp.full(projector.out_shape, 1., dtype=xp.float32)
+sens_sino2 = xp.full(projector.out_shape, 1., dtype=xp.float32)
+
+# generate sinograms of multiplicative corrections (attention times sensitivity)
+mult_corr1 = att_sino1 * sens_sino1
+mult_corr2 = att_sino2 * sens_sino2
 
 #----------------------------------------------------------------------
 #----------------------------------------------------------------------
@@ -173,36 +240,39 @@ sens_sino = xp.full(projector.out_shape, 1., dtype=xp.float32)
 # projector and multiplication by sensitivity
 
 image_space_filter = GaussianFilterOperator(projector.in_shape,
-                                            ndi, xp,
+                                            ndi,
+                                            xp,
                                             sigma=4.5 / (2.35 * voxel_size))
 
-sens_operator = ElementwiseMultiplicationOperator(sens_sino * att_sino, xp)
-
-fwd_model = CompositeLinearOperator(
-    (sens_operator, projector, image_space_filter))
-
-fwd_model.adjointness_test(verbose=True)
-fwd_model_norm = fwd_model.norm()
+# setup a projector including an image-based resolution model
+projector_with_res_model = CompositeLinearOperator(
+    (projector, image_space_filter))
 
 #----------------------------------------------------------------------
 #----------------------------------------------------------------------
 #----------------------------------------------------------------------
 
 # apply the forward model to generate noise-free data
-img_fwd = fwd_model(img)
+img_fwd1 = mult_corr1 * projector_with_res_model(img1)
+img_fwd2 = mult_corr2 * projector_with_res_model(img2)
 
 # generate a constant contamination sinogram
-contamination = xp.full(img_fwd.shape, 0.5 * img_fwd.mean(), dtype=xp.float32)
+add_corr1 = xp.full(img_fwd1.shape, 0.5 * img_fwd1.mean(), dtype=xp.float32)
+add_corr2 = xp.full(img_fwd2.shape, 0.75 * img_fwd2.mean(), dtype=xp.float32)
 
 # generate noisy data
-data = xp.random.poisson(img_fwd + contamination)
+data1 = xp.random.poisson(img_fwd1 + add_corr1)
+data2 = xp.random.poisson(img_fwd2 + add_corr2)
 
-# do ack projection (the adjoint of the forward projection)
-data_back = fwd_model.adjoint(data)
+# create the sensitivity images (adjoint applied to "ones")
+adjoint_ones1 = projector_with_res_model.adjoint(mult_corr1)
+adjoint_ones2 = projector_with_res_model.adjoint(mult_corr2)
 
-# convert the data and contamination sinograms to torch tensor
-contamination_t = torch.from_dlpack(contamination)
-data_t = torch.from_dlpack(data)
+# create torch "mini-batch" tensors
+data_t = torch.from_dlpack(cp.stack((data1, data2)))
+mult_corr_t = torch.from_dlpack(cp.stack((mult_corr1, mult_corr2)))
+add_corr_t = torch.from_dlpack(cp.stack((add_corr1, add_corr2)))
+adjoint_ones_t = torch.from_dlpack(cp.stack((adjoint_ones1, adjoint_ones2)))
 
 #----------------------------------------------------------------------
 #----------------------------------------------------------------------
@@ -212,25 +282,28 @@ data_t = torch.from_dlpack(data)
 
 num_iter = 400
 
-dtype = torch.float32
-device = torch.device("cuda:0")
+x0_t = torch.ones((2, ) + projector_with_res_model.in_shape,
+                  device=data_t.device,
+                  dtype=torch.float32)
 
-fwd_layer = LinearOperatorForwardLayer.apply
-adjoint_layer = LinearOperatorAdjointLayer.apply
-
-x0_t = torch.ones(fwd_model.in_shape, device=device, dtype=dtype)
 x_t = torch.clone(x0_t)
 
-sens_image_t = adjoint_layer(
-    torch.ones(fwd_model.out_shape, dtype=dtype, device=device), fwd_model)
+em_module = PoissonEMModule(projector_with_res_model)
 
+# setup our unrolled MLEM network
 for i in range(num_iter):
-    print(f'it {(i+1):04} / {num_iter:04}', end='\r')
-    exp_t = fwd_layer(x_t, fwd_model) + contamination_t
-    x_t *= (adjoint_layer(data_t / exp_t, fwd_model) / sens_image_t)
+    print(f'iteration {(i+1):04} / {num_iter:04}', end='\r')
+    x_t = em_module(x_t, data_t, mult_corr_t, add_corr_t, adjoint_ones_t)
+print('')
 
 # convert recon to cupy array
 x = cp.ascontiguousarray(cp.from_dlpack(x_t.detach()))
+img = cp.stack((img1, img2))
+img_fwd = cp.stack((img_fwd1, img_fwd2))
+data = cp.ascontiguousarray(cp.from_dlpack(data_t.detach()))
+adjoint_ones = cp.ascontiguousarray(cp.from_dlpack(adjoint_ones_t.detach()))
+mult_corr = cp.ascontiguousarray(cp.from_dlpack(mult_corr_t.detach()))
+add_corr = cp.ascontiguousarray(cp.from_dlpack(add_corr_t.detach()))
 
 #----------------------------------------------------------------------
 #----------------------------------------------------------------------
@@ -238,50 +311,59 @@ x = cp.ascontiguousarray(cp.from_dlpack(x_t.detach()))
 
 im_kwargs = dict(origin='lower', cmap='Greys')
 
-fig2, ax2 = plt.subplots(2, 4, figsize=(4 * 4, 2 * 4))
-im00 = ax2[0, 0].imshow(tonumpy(img_fwd, xp),
-                        cmap='Greys',
-                        vmax=1.25 * float(img_fwd.max()))
-im01 = ax2[0, 1].imshow(tonumpy(data, xp),
-                        cmap='Greys',
-                        vmax=1.25 * float(img_fwd.max()))
-im02 = ax2[0, 2].imshow(tonumpy(att_sino, xp), cmap='Greys', vmin=0, vmax=1)
-ax2[0, 3].set_axis_off()
+for i in range(2):
+    fig2, ax2 = plt.subplots(2, 4, figsize=(4 * 4, 2 * 4))
+    im00 = ax2[0, 0].imshow(tonumpy(img_fwd[i, ...], xp),
+                            cmap='Greys',
+                            vmax=1.25 * float(img_fwd[i, ...].max()))
+    im01 = ax2[0, 1].imshow(tonumpy(data[i, ...], xp),
+                            cmap='Greys',
+                            vmax=1.25 * float(img_fwd[i, ...].max()))
+    im02 = ax2[0, 2].imshow(tonumpy(mult_corr[i, ...], xp),
+                            cmap='Greys',
+                            vmin=0,
+                            vmax=1)
+    im03 = ax2[0, 3].imshow(tonumpy(add_corr[i, ...], xp), cmap='Greys')
 
-im10 = ax2[1, 0].imshow(tonumpy(img[0, ...], xp).T,
-                        vmax=1.2 * img.max(),
-                        **im_kwargs)
-im11 = ax2[1, 1].imshow(tonumpy(data_back[0, ...], xp).T, **im_kwargs)
-im12 = ax2[1, 2].imshow(tonumpy(x[0, ...], xp).T,
-                        vmax=1.2 * img.max(),
-                        **im_kwargs)
-im13 = ax2[1, 3].imshow(tonumpy(
-    ndi.gaussian_filter(x, 5.5 / (2.35 * voxel_size))[0, ...], xp).T,
-                        vmax=1.2 * img.max(),
-                        **im_kwargs)
+    im10 = ax2[1, 0].imshow(tonumpy(img[i, ...].squeeze(), xp).T,
+                            vmax=1.2 * img[i, ...].max(),
+                            **im_kwargs)
+    im11 = ax2[1, 1].imshow(
+        tonumpy(adjoint_ones[i, ...].squeeze(), xp).T, **im_kwargs)
+    im12 = ax2[1, 2].imshow(tonumpy(x[i, ...].squeeze(), xp).T,
+                            vmax=1.2 * img[i, ...].max(),
+                            **im_kwargs)
+    im13 = ax2[1, 3].imshow(tonumpy(
+        ndi.gaussian_filter(x[i, ...], 6.0 / (2.35 * voxel_size)).squeeze(),
+        xp).T,
+                            vmax=1.2 * img[i, ...].max(),
+                            **im_kwargs)
 
-ax2[0, 0].set_title('Ax', fontsize='small')
-ax2[0, 1].set_title('d = Poisson(Ax + s)', fontsize='small')
-ax2[0, 2].set_title('attenuation sinogram', fontsize='small')
-ax2[1, 0].set_title('image - x', fontsize='small')
-ax2[1, 1].set_title('back projection of data - A^H d', fontsize='small')
-ax2[1, 2].set_title(f'MLEM - {num_iter} it.', fontsize='small')
-ax2[1, 3].set_title(f'post-smoothed MLEM - {num_iter} it.', fontsize='small')
+    ax2[0, 0].set_title('Ax', fontsize='small')
+    ax2[0, 1].set_title('d = Poisson(Ax + s)', fontsize='small')
+    ax2[0, 2].set_title('mult. correction sinogram', fontsize='small')
+    ax2[0, 3].set_title('add. correction sinogram', fontsize='small')
+    ax2[1, 0].set_title('image - x', fontsize='small')
+    ax2[1, 1].set_title('sensitivity image - A^H 1', fontsize='small')
+    ax2[1, 2].set_title(f'MLEM - {num_iter} it.', fontsize='small')
+    ax2[1, 3].set_title(f'post-smoothed MLEM - {num_iter} it.',
+                        fontsize='small')
 
-cb00 = fig2.colorbar(im00, fraction=0.03)
-cb01 = fig2.colorbar(im01, fraction=0.03)
-cb02 = fig2.colorbar(im02, fraction=0.03)
-cb10 = fig2.colorbar(im10, fraction=0.03)
-cb11 = fig2.colorbar(im11, fraction=0.03)
-cb12 = fig2.colorbar(im12, fraction=0.03)
-cb13 = fig2.colorbar(im13, fraction=0.03)
+    cb00 = fig2.colorbar(im00, fraction=0.03)
+    cb01 = fig2.colorbar(im01, fraction=0.03)
+    cb02 = fig2.colorbar(im02, fraction=0.03)
+    cb03 = fig2.colorbar(im03, fraction=0.03)
+    cb10 = fig2.colorbar(im10, fraction=0.03)
+    cb11 = fig2.colorbar(im11, fraction=0.03)
+    cb12 = fig2.colorbar(im12, fraction=0.03)
+    cb13 = fig2.colorbar(im13, fraction=0.03)
 
-for i in range(3):
-    ax2[0, i].set_xlabel('radial bin')
-    ax2[0, i].set_ylabel('view number')
-for i in range(4):
-    ax2[1, i].set_xlabel('x1')
-    ax2[1, i].set_ylabel('x2')
+    for i in range(3):
+        ax2[0, i].set_xlabel('radial bin')
+        ax2[0, i].set_ylabel('view number')
+    for i in range(4):
+        ax2[1, i].set_xlabel('x1')
+        ax2[1, i].set_ylabel('x2')
 
-fig2.tight_layout()
-fig2.show()
+    fig2.tight_layout()
+    fig2.show()
