@@ -11,6 +11,7 @@ from parallelproj.projectors import ParallelViewProjector2D
 from parallelproj.utils import tonumpy
 
 import matplotlib.pyplot as plt
+import collections
 
 
 class LinearOperatorForwardLayer(torch.autograd.Function):
@@ -194,13 +195,17 @@ class PoissonEMModule(torch.nn.Module):
 #----------------------------------------------------------------------
 
 
-class UnrolledMLEMNet(torch.nn.Module):
+class UnrolledVarNet(torch.nn.Module):
+    """unrolled varaitional network consisting of a PoissonEMModule and neural network blocks"""
 
     def __init__(self, poisson_em_module: torch.nn.Module,
-                 num_iterations: int) -> None:
+                 neural_net: torch.nn.Module, num_iterations: int) -> None:
         super().__init__()
         self._poisson_em_module = poisson_em_module
         self._num_iterations = num_iterations
+
+        self._neural_net = neural_net
+        self._neural_net_weight = torch.nn.Parameter(torch.tensor(1.0))
 
     def forward(self,
                 x: torch.Tensor,
@@ -214,7 +219,7 @@ class UnrolledMLEMNet(torch.nn.Module):
         Parameters
         ----------
         x : torch.Tensor
-            minibatch of 3D images with dimension (batch_size, n0, n1, n2)
+            minibatch of 3D images with dimension (batch_size, 1, n0, n1, n2)
         data : torch.Tensor
             emission data (batch_size, data_size)
         multiplicative_correction : torch.Tensor
@@ -237,8 +242,14 @@ class UnrolledMLEMNet(torch.nn.Module):
         for i in range(self._num_iterations):
             if verbose:
                 print(f'iteration {(i+1):04} / {num_iter:04}', end='\r')
-            y = self._poisson_em_module(y, data, multiplicative_correction,
-                                        additive_correction, adjoint_ones)
+            y_data = self._poisson_em_module(y, data,
+                                             multiplicative_correction,
+                                             additive_correction, adjoint_ones)
+
+            # pytorch convnets expect input tensors of shape (batch_size, num_channels, spatial_shape)
+            # here we just add a dummy channel dimension
+            y_net = self._neural_net(y.unsqueeze(1))[:, 0, ...]
+            y = torch.nn.ReLU()(y_data + self._neural_net_weight * y_net)
 
         if verbose: print('')
 
@@ -250,6 +261,7 @@ class UnrolledMLEMNet(torch.nn.Module):
 #----------------------------------------------------------------------
 
 # setup a test image
+torch.manual_seed(0)
 
 # image dimensions
 n0, n1, n2 = (1, 128, 128)
@@ -363,16 +375,39 @@ x0_t = torch.ones((2, ) + projector_with_res_model.in_shape,
 
 # setup the module for the Poisson EM update (data fidelity)
 em_module = PoissonEMModule(projector_with_res_model)
+
+# setup a minial convolutional network
+device = 'cuda:0'
+dtype = torch.float32
+num_features = 5
+kernel_size = (1, 3, 3)
+conv_net = collections.OrderedDict()
+conv_net['conv_1'] = torch.nn.Conv3d(1,
+                                     num_features,
+                                     kernel_size,
+                                     padding='same',
+                                     device=device,
+                                     dtype=dtype)
+conv_net['prelu_1'] = torch.nn.PReLU(device=device)
+conv_net['conv_2'] = torch.nn.Conv3d(5,
+                                     num_features,
+                                     kernel_size,
+                                     padding='same',
+                                     device=device,
+                                     dtype=dtype)
+conv_net['prelu_2'] = torch.nn.PReLU(device=device)
+conv_net = torch.nn.Sequential(conv_net)
+
 # setup the unrolled MLEM network
-mlem_net = UnrolledMLEMNet(em_module, num_iter)
+var_net = UnrolledVarNet(em_module, conv_net, num_iter)
 
 # feed a minibatch through the network
-x_t = mlem_net.forward(x0_t,
-                       data_t,
-                       mult_corr_t,
-                       add_corr_t,
-                       adjoint_ones_t,
-                       verbose=True)
+x_t = var_net.forward(x0_t,
+                      data_t,
+                      mult_corr_t,
+                      add_corr_t,
+                      adjoint_ones_t,
+                      verbose=True)
 
 #----------------------------------------------------------------------
 #----------------------------------------------------------------------
