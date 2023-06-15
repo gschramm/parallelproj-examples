@@ -1,21 +1,28 @@
 # ## example that shows how to MLEM reconstruction on cupy GPU arrays
 
 # +
-import numpy as xp
-import scipy.ndimage as ndi
+#import numpy as xp
+#import scipy.ndimage as ndi
+import cupy as xp
+import cupyx.scipy.ndimage as ndi
 
 from parallelproj.operators import CompositeLinearOperator, ElementwiseMultiplicationOperator, GaussianFilterOperator
 from parallelproj.projectors import ParallelViewProjector2D
 from parallelproj.utils import tonumpy
 
 import matplotlib.pyplot as plt
+
+from utils import generate_random_image
 # -
 
-# ### setup a test image
+# ### setup a batch of "random" ground truth images
 
 # +
+# seed the random generator, since we are using random images
+xp.random.seed(0)
 # image dimensions
 n0, n1, n2 = (1, 128, 128)
+num_images = 5
 img_shape = (n0, n1, n2)
 
 # voxel size of the image
@@ -24,13 +31,13 @@ voxel_size = xp.array([2., 2., 2.]).astype(xp.float32)
 # image origin -> world coordinates of the [0,0,0] voxel
 img_origin = ((-xp.array(img_shape) / 2 + 0.5) * voxel_size).astype(xp.float32)
 
-# setup a random image
-img = xp.zeros((n0, n1, n2)).astype(xp.float32)
-img[:, (n1 // 4):((3 * n1) // 4), (n2 // 4):((3 * n2) // 4)] = 1
-img[:, (n1 // 4):(n1 // 3), (n2 // 4):(n2 // 3)] = 3
+img_batch = xp.zeros((num_images, n0, n1, n2), dtype=xp.float32)
+
+for i in range(num_images):
+    img_batch[i, ...] = generate_random_image(n0, n1, n2, xp, ndi)
 # -
 
-# ### setup a non-tof projector
+# ### setup a simple "2D" parallel view non-tof projector
 
 # +
 # setup the coordinates for projections along parallel views
@@ -45,22 +52,35 @@ view_angles = xp.linspace(0, xp.pi, num_phi, endpoint=False, dtype=xp.float32)
 
 projector = ParallelViewProjector2D(img_shape, r, view_angles, scanner_R,
                                     img_origin, voxel_size, xp)
-
-fig = projector.show_views(image=img, cmap='Greys')
 # -
 
-# ### generate an attenuation and sensitivity sinogram
+# ### show the projector geometry
 
 # +
-# the attenuation coefficients in 1/mm
-att_img = 0.01 * (img > 0).astype(xp.float32)
-att_sino = xp.exp(-projector(att_img))
-
-# generate a constant sensitivity sinogram
-sens_sino = xp.full(projector.out_shape, 1., dtype=xp.float32)
+fig_proj = projector.show_views(image=img_batch[0, ...], cmap='Greys')
 # -
 
-# ### setup the complete forward model consisting of image-based resolution model
+# ### generate the attenuation images, attenuation sinograms, and sensitivity sinograms for our forward model
+
+# +
+att_img_batch = xp.zeros((num_images, n0, n1, n2), dtype=xp.float32)
+att_sino_batch = xp.zeros((num_images, num_phi, num_rad), dtype=xp.float32)
+
+for i in range(num_images):
+    # the attenuation coefficients in 1/mm
+    att_img_batch[i, ...] = 0.01 * (img_batch[i, ...] > 0).astype(xp.float32)
+    att_sino_batch[i, ...] = xp.exp(-projector(att_img_batch[i, ...]))
+
+# generate a constant sensitivity sinogram
+sens_sino_batch = xp.full((num_images, ) + projector.out_shape,
+                          0.3,
+                          dtype=xp.float32)
+
+# generate sinograms of multiplicative corrections (attention times sensitivity)
+mult_corr_batch = att_sino_batch * sens_sino_batch
+# -
+
+# ###setup the complete forward model consisting of image-based resolution model projector and multiplication by sensitivity
 
 # +
 image_space_filter = GaussianFilterOperator(projector.in_shape,
@@ -68,98 +88,116 @@ image_space_filter = GaussianFilterOperator(projector.in_shape,
                                             xp,
                                             sigma=4.5 / (2.35 * voxel_size))
 
-sens_operator = ElementwiseMultiplicationOperator(sens_sino * att_sino, xp)
-
-fwd_model = CompositeLinearOperator(
-    (sens_operator, projector, image_space_filter))
-
-fwd_model.adjointness_test(verbose=True)
-fwd_model_norm = fwd_model.norm()
+# setup a projector including an image-based resolution model
+projector_with_res_model = CompositeLinearOperator(
+    (projector, image_space_filter))
 # -
-
-# ### generate noise-free and noisy data
 
 # +
 # apply the forward model to generate noise-free data
-img_fwd = fwd_model(img)
+img_fwd_batch = xp.zeros((num_images, num_phi, num_rad), dtype=xp.float32)
+add_corr_batch = xp.zeros((num_images, num_phi, num_rad), dtype=xp.float32)
+adjoint_ones_batch = xp.zeros((num_images, n0, n1, n2), dtype=xp.float32)
 
-# generate a constant contamination sinogram
-contamination = xp.full(img_fwd.shape, 0.5 * img_fwd.mean(), dtype=xp.float32)
+for i in range(num_images):
+    img_fwd_batch[i, ...] = mult_corr_batch[i, ...] * projector_with_res_model(
+        img_batch[i, ...])
+
+    # generate a constant contamination sinogram
+    add_corr_batch[i, ...] = xp.full(img_fwd_batch[i, ...].shape,
+                                     0.5 * img_fwd_batch[i, ...].mean(),
+                                     dtype=xp.float32)
 
 # generate noisy data
-data = xp.random.poisson(img_fwd + contamination)
-
-# do ack projection (the adjoint of the forward projection)
-data_back = fwd_model.adjoint(data)
+data_batch = xp.random.poisson(img_fwd_batch + add_corr_batch)
 # -
 
-# ### run MLEM
+# ### generate the sensitivity images (adjoint operator applied to a sinogram of ones)
 
 # +
-# run MLEM
+# create the sensitivity images (adjoint applied to "ones")
+for i in range(num_images):
+    adjoint_ones_batch[i, ...] = projector_with_res_model.adjoint(
+        mult_corr_batch[i, ...])
+
+# -
+
+# ### show all input data
+
+# +
+fig, ax = plt.subplots(4, num_images, figsize=(2.5 * num_images, 2.5 * 4))
+for i in range(num_images):
+    im0 = ax[0, i].imshow(tonumpy(img_batch[i, n0 // 2, ...], xp),
+                          cmap='Greys',
+                          vmin=0,
+                          vmax=float(1.2 * img_batch.max()))
+    im1 = ax[1, i].imshow(tonumpy(att_img_batch[i, n0 // 2, ...], xp),
+                          cmap='Greys',
+                          vmin=0,
+                          vmax=float(att_img_batch.max()))
+    im2 = ax[2, i].imshow(tonumpy(mult_corr_batch[i, ...], xp),
+                          cmap='Greys',
+                          vmin=0,
+                          vmax=float(mult_corr_batch.max()))
+    im3 = ax[3, i].imshow(tonumpy(data_batch[i, ...], xp),
+                          cmap='Greys',
+                          vmin=0,
+                          vmax=float(data_batch.max()))
+
+    cb0 = fig.colorbar(im0, fraction=0.03, location='bottom')
+    cb1 = fig.colorbar(im1, fraction=0.03, location='bottom')
+    cb2 = fig.colorbar(im2, fraction=0.03, location='bottom')
+    cb3 = fig.colorbar(im3, fraction=0.03, location='bottom')
+
+    ax[0, i].set_title(f'ground truth image {i:03}', fontsize='medium')
+    ax[1, i].set_title(f'attenuation image {i:03}', fontsize='medium')
+    ax[2, i].set_title(f'mult. corr. sinogram {i:03}', fontsize='medium')
+    ax[3, i].set_title(f'noisy data sinogram {i:03}', fontsize='medium')
+
+for axx in ax.ravel():
+    axx.axis('off')
+fig.tight_layout()
+# -
+
+### run MLEM
+
+# +
 num_iter = 100
 
-x0 = xp.ones(img.shape, dtype=xp.float32)
-x = x0.copy()
+x0_batch = xp.ones(img_batch.shape, dtype=xp.float32)
+x_batch = x0_batch.copy()
 
-sens_image = fwd_model.adjoint(xp.ones(fwd_model.out_shape, dtype=xp.float32))
-
-for i in range(num_iter):
-    print(f'it {(i+1):04} / {num_iter:04}', end='\r')
-    exp = fwd_model(x) + contamination
-    x *= (fwd_model.adjoint(data / exp) / sens_image)
+for it in range(num_iter):
+    print(f'it {(it+1):04} / {num_iter:04}', end='\r')
+    for ib in range(num_images):
+        exp = mult_corr_batch[ib, ...] * projector_with_res_model(
+            x_batch[ib, ...]) + add_corr_batch[ib, ...]
+        x_batch[ib, ...] *= (projector_with_res_model.adjoint(
+            mult_corr_batch[ib, ...] * data_batch[ib, ...] / exp) /
+                             adjoint_ones_batch[ib, ...])
+print('')
 # -
 
-# ### show the results
+# ### show all MLEM reconstructions
 
 # +
-im_kwargs = dict(origin='lower', cmap='Greys')
+figm, axm = plt.subplots(1,
+                         num_images,
+                         figsize=(2.5 * num_images, 2.5 * 1),
+                         squeeze=False)
+for i in range(num_images):
+    im0 = axm[0, i].imshow(tonumpy(x_batch[i, n0 // 2, ...], xp),
+                           cmap='Greys',
+                           vmin=0,
+                           vmax=float(1.2 * img_batch.max()))
 
-fig2, ax2 = plt.subplots(2, 4, figsize=(4 * 4, 2 * 4))
-im00 = ax2[0, 0].imshow(tonumpy(img_fwd, xp),
-                        cmap='Greys',
-                        vmax=1.25 * float(img_fwd.max()))
-im01 = ax2[0, 1].imshow(tonumpy(data, xp),
-                        cmap='Greys',
-                        vmax=1.25 * float(img_fwd.max()))
-im02 = ax2[0, 2].imshow(tonumpy(att_sino, xp), cmap='Greys', vmin=0, vmax=1)
-ax2[0, 3].set_axis_off()
+    cb0 = figm.colorbar(im0, fraction=0.03, location='bottom')
 
-im10 = ax2[1, 0].imshow(tonumpy(img[0, ...], xp).T,
-                        vmax=1.2 * img.max(),
-                        **im_kwargs)
-im11 = ax2[1, 1].imshow(tonumpy(data_back[0, ...], xp).T, **im_kwargs)
-im12 = ax2[1, 2].imshow(tonumpy(x[0, ...], xp).T,
-                        vmax=1.2 * img.max(),
-                        **im_kwargs)
-im13 = ax2[1, 3].imshow(tonumpy(
-    ndi.gaussian_filter(x, 5.5 / (2.35 * voxel_size))[0, ...], xp).T,
-                        vmax=1.2 * img.max(),
-                        **im_kwargs)
+    axm[0, i].set_title(f'MLEM {i:03} - {num_iter:03} it.', fontsize='medium')
 
-ax2[0, 0].set_title('Ax', fontsize='small')
-ax2[0, 1].set_title('d = Poisson(Ax + s)', fontsize='small')
-ax2[0, 2].set_title('attenuation sinogram', fontsize='small')
-ax2[1, 0].set_title('image - x', fontsize='small')
-ax2[1, 1].set_title('back projection of data - A^H d', fontsize='small')
-ax2[1, 2].set_title(f'MLEM - {num_iter} it.', fontsize='small')
-ax2[1, 3].set_title(f'post-smoothed MLEM - {num_iter} it.', fontsize='small')
-
-cb00 = fig2.colorbar(im00, fraction=0.03)
-cb01 = fig2.colorbar(im01, fraction=0.03)
-cb02 = fig2.colorbar(im02, fraction=0.03)
-cb10 = fig2.colorbar(im10, fraction=0.03)
-cb11 = fig2.colorbar(im11, fraction=0.03)
-cb12 = fig2.colorbar(im12, fraction=0.03)
-cb13 = fig2.colorbar(im13, fraction=0.03)
-
-for i in range(3):
-    ax2[0, i].set_xlabel('radial bin')
-    ax2[0, i].set_ylabel('view number')
-for i in range(4):
-    ax2[1, i].set_xlabel('x1')
-    ax2[1, i].set_ylabel('x2')
-
-fig2.tight_layout()
+for axx in axm.ravel():
+    axx.axis('off')
+figm.tight_layout()
 
 plt.show()
+# -
