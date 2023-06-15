@@ -33,7 +33,7 @@ img[:, (n1 // 4):(n1 // 3), (n2 // 4):(n2 // 3)] = 3
 # ### setup a non-tof projector
 
 # +
-¶# setup the coordinates for projections along parallel views
+# setup the coordinates for projections along parallel views
 num_rad = 223
 num_phi = 190
 # "radius" of the scanner in mm
