@@ -1,6 +1,9 @@
 # ## example that shows how to MLEM reconstruction on cupy GPU arrays
 
 # +
+import numpy as np
+
+# run script either in numpy mode using CPU arrays or in cupy mode using GPU arrays
 #import numpy as xp
 #import scipy.ndimage as ndi
 import cupy as xp
@@ -13,17 +16,20 @@ from parallelproj.utils import tonumpy
 import matplotlib.pyplot as plt
 
 from utils import generate_random_image
+from shapes import random_2d_shape_image
 # -
 
 # ### setup a batch of "random" ground truth images
 
 # +
 # seed the random generator, since we are using random images
-xp.random.seed(0)
+seed = 0
+xp.random.seed(seed)
+np.random.seed(seed)
 # image dimensions
-n0, n1, n2 = (1, 128, 128)
+n = 128
 num_images = 5
-img_shape = (n0, n1, n2)
+img_shape = (1, n, n)
 
 # voxel size of the image
 voxel_size = xp.array([2., 2., 2.]).astype(xp.float32)
@@ -31,10 +37,10 @@ voxel_size = xp.array([2., 2., 2.]).astype(xp.float32)
 # image origin -> world coordinates of the [0,0,0] voxel
 img_origin = ((-xp.array(img_shape) / 2 + 0.5) * voxel_size).astype(xp.float32)
 
-img_batch = xp.zeros((num_images, n0, n1, n2), dtype=xp.float32)
+img_batch = xp.zeros((num_images, ) + img_shape, dtype=xp.float32)
 
 for i in range(num_images):
-    img_batch[i, ...] = generate_random_image(n0, n1, n2, xp, ndi)
+    img_batch[i, 0, ...] = generate_random_image(n, xp, ndi)
 # -
 
 # ### setup a simple "2D" parallel view non-tof projector
@@ -56,14 +62,12 @@ projector = ParallelViewProjector2D(img_shape, r, view_angles, scanner_R,
 
 # ### show the projector geometry
 
-# +
 fig_proj = projector.show_views(image=img_batch[0, ...], cmap='Greys')
-# -
 
 # ### generate the attenuation images, attenuation sinograms, and sensitivity sinograms for our forward model
 
 # +
-att_img_batch = xp.zeros((num_images, n0, n1, n2), dtype=xp.float32)
+att_img_batch = xp.zeros((num_images, ) + img_shape, dtype=xp.float32)
 att_sino_batch = xp.zeros((num_images, num_phi, num_rad), dtype=xp.float32)
 
 for i in range(num_images):
@@ -73,7 +77,7 @@ for i in range(num_images):
 
 # generate a constant sensitivity sinogram
 sens_sino_batch = xp.full((num_images, ) + projector.out_shape,
-                          0.3,
+                          0.5,
                           dtype=xp.float32)
 
 # generate sinograms of multiplicative corrections (attention times sensitivity)
@@ -91,13 +95,12 @@ image_space_filter = GaussianFilterOperator(projector.in_shape,
 # setup a projector including an image-based resolution model
 projector_with_res_model = CompositeLinearOperator(
     (projector, image_space_filter))
-# -
 
 # +
 # apply the forward model to generate noise-free data
 img_fwd_batch = xp.zeros((num_images, num_phi, num_rad), dtype=xp.float32)
 add_corr_batch = xp.zeros((num_images, num_phi, num_rad), dtype=xp.float32)
-adjoint_ones_batch = xp.zeros((num_images, n0, n1, n2), dtype=xp.float32)
+adjoint_ones_batch = xp.zeros((num_images, ) + img_shape, dtype=xp.float32)
 
 for i in range(num_images):
     img_fwd_batch[i, ...] = mult_corr_batch[i, ...] * projector_with_res_model(
@@ -114,24 +117,21 @@ data_batch = xp.random.poisson(img_fwd_batch + add_corr_batch)
 
 # ### generate the sensitivity images (adjoint operator applied to a sinogram of ones)
 
-# +
 # create the sensitivity images (adjoint applied to "ones")
 for i in range(num_images):
     adjoint_ones_batch[i, ...] = projector_with_res_model.adjoint(
         mult_corr_batch[i, ...])
-
-# -
 
 # ### show all input data
 
 # +
 fig, ax = plt.subplots(4, num_images, figsize=(2.5 * num_images, 2.5 * 4))
 for i in range(num_images):
-    im0 = ax[0, i].imshow(tonumpy(img_batch[i, n0 // 2, ...], xp),
+    im0 = ax[0, i].imshow(tonumpy(img_batch[i, 0, ...], xp),
                           cmap='Greys',
                           vmin=0,
                           vmax=float(1.2 * img_batch.max()))
-    im1 = ax[1, i].imshow(tonumpy(att_img_batch[i, n0 // 2, ...], xp),
+    im1 = ax[1, i].imshow(tonumpy(att_img_batch[i, 0, ...], xp),
                           cmap='Greys',
                           vmin=0,
                           vmax=float(att_img_batch.max()))
@@ -159,7 +159,7 @@ for axx in ax.ravel():
 fig.tight_layout()
 # -
 
-### run MLEM
+# ## run MLEM
 
 # +
 num_iter = 100
@@ -183,11 +183,11 @@ print('')
 # +
 figm, axm = plt.subplots(2, num_images, figsize=(2.5 * num_images, 2.5 * 2))
 for i in range(num_images):
-    im0 = axm[0, i].imshow(tonumpy(img_batch[i, n0 // 2, ...], xp),
+    im0 = axm[0, i].imshow(tonumpy(img_batch[i, 0, ...], xp),
                            cmap='Greys',
                            vmin=0,
                            vmax=float(1.2 * img_batch.max()))
-    im1 = axm[1, i].imshow(tonumpy(x_batch[i, n0 // 2, ...], xp),
+    im1 = axm[1, i].imshow(tonumpy(x_batch[i, 0, ...], xp),
                            cmap='Greys',
                            vmin=0,
                            vmax=float(1.2 * img_batch.max()))
@@ -203,4 +203,3 @@ for axx in axm.ravel():
 figm.tight_layout()
 
 plt.show()
-# -
