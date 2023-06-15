@@ -288,6 +288,7 @@ torch.manual_seed(0)
 
 # image dimensions
 n0, n1, n2 = (1, 128, 128)
+num_images = 5
 img_shape = (n0, n1, n2)
 
 # voxel size of the image
@@ -295,14 +296,6 @@ voxel_size = xp.array([2., 2., 2.]).astype(xp.float32)
 
 # image origin -> world coordinates of the [0,0,0] voxel
 img_origin = ((-xp.array(img_shape) / 2 + 0.5) * voxel_size).astype(xp.float32)
-
-# setup a 2 test images
-img1 = generate_random_image(n0, n1, n2)
-img2 = generate_random_image(n0, n1, n2)
-
-#----------------------------------------------------------------------
-#----------------------------------------------------------------------
-#----------------------------------------------------------------------
 
 # setup the coordinates for projections along parallel views
 num_rad = 223
@@ -314,6 +307,20 @@ scanner_R = 350.
 r = xp.linspace(-200, 200, num_rad, dtype=xp.float32)
 view_angles = xp.linspace(0, xp.pi, num_phi, endpoint=False, dtype=xp.float32)
 
+#----------------------------------------------------------------------
+#----------------------------------------------------------------------
+#----------------------------------------------------------------------
+
+# setup a 2 test images
+img_batch = xp.zeros((num_images, n0, n1, n2), dtype=xp.float32)
+
+for i in range(num_images):
+    img_batch[i, ...] = generate_random_image(n0, n1, n2)
+
+#----------------------------------------------------------------------
+#----------------------------------------------------------------------
+#----------------------------------------------------------------------
+
 projector = ParallelViewProjector2D(img_shape, r, view_angles, scanner_R,
                                     img_origin, voxel_size, xp)
 
@@ -322,20 +329,21 @@ projector = ParallelViewProjector2D(img_shape, r, view_angles, scanner_R,
 #----------------------------------------------------------------------
 # generate the attenuation image and sinogram
 
-# the attenuation coefficients in 1/mm
-att_img1 = 0.01 * (img1 > 0).astype(xp.float32)
-att_sino1 = xp.exp(-projector(att_img1))
+att_img_batch = xp.zeros((num_images, n0, n1, n2), dtype=xp.float32)
+att_sino_batch = xp.zeros((num_images, num_phi, num_rad), dtype=xp.float32)
 
-att_img2 = 0.01 * (img2 > 0).astype(xp.float32)
-att_sino2 = xp.exp(-projector(att_img2))
+for i in range(num_images):
+    # the attenuation coefficients in 1/mm
+    att_img_batch[i, ...] = 0.01 * (img_batch[i, ...] > 0).astype(xp.float32)
+    att_sino_batch[i, ...] = xp.exp(-projector(att_img_batch[i, ...]))
 
 # generate a constant sensitivity sinogram
-sens_sino1 = xp.full(projector.out_shape, 1., dtype=xp.float32)
-sens_sino2 = xp.full(projector.out_shape, 1., dtype=xp.float32)
+sens_sino_batch = xp.full((num_images, ) + projector.out_shape,
+                          1.,
+                          dtype=xp.float32)
 
 # generate sinograms of multiplicative corrections (attention times sensitivity)
-mult_corr1 = att_sino1 * sens_sino1
-mult_corr2 = att_sino2 * sens_sino2
+mult_corr_batch = att_sino_batch * sens_sino_batch
 
 #----------------------------------------------------------------------
 #----------------------------------------------------------------------
@@ -358,39 +366,67 @@ projector_with_res_model = CompositeLinearOperator(
 #----------------------------------------------------------------------
 
 # apply the forward model to generate noise-free data
-img_fwd1 = mult_corr1 * projector_with_res_model(img1)
-img_fwd2 = mult_corr2 * projector_with_res_model(img2)
+img_fwd_batch = xp.zeros((num_images, num_phi, num_rad), dtype=xp.float32)
+add_corr_batch = xp.zeros((num_images, num_phi, num_rad), dtype=xp.float32)
+adjoint_ones_batch = xp.zeros((num_images, n0, n1, n2), dtype=xp.float32)
 
-# generate a constant contamination sinogram
-add_corr1 = xp.full(img_fwd1.shape, 0.5 * img_fwd1.mean(), dtype=xp.float32)
-add_corr2 = xp.full(img_fwd2.shape, 0.75 * img_fwd2.mean(), dtype=xp.float32)
+for i in range(num_images):
+    img_fwd_batch[i, ...] = mult_corr_batch[i, ...] * projector_with_res_model(
+        img_batch[i, ...])
+
+    # generate a constant contamination sinogram
+    add_corr_batch[i, ...] = xp.full(img_fwd_batch[i, ...].shape,
+                                     0.5 * img_fwd_batch[i, ...].mean(),
+                                     dtype=xp.float32)
 
 # generate noisy data
-data1 = xp.random.poisson(img_fwd1 + add_corr1)
-data2 = xp.random.poisson(img_fwd2 + add_corr2)
+data_batch = xp.random.poisson(img_fwd_batch + add_corr_batch)
 
 # create the sensitivity images (adjoint applied to "ones")
-adjoint_ones1 = projector_with_res_model.adjoint(mult_corr1)
-adjoint_ones2 = projector_with_res_model.adjoint(mult_corr2)
+for i in range(num_images):
+    adjoint_ones_batch[i, ...] = projector_with_res_model.adjoint(
+        mult_corr_batch[i, ...])
 
 # create torch "mini-batch" tensors
-img = torch.from_dlpack(cp.stack((img1, img2)))
-data_t = torch.from_dlpack(cp.stack((data1, data2)))
-mult_corr_t = torch.from_dlpack(cp.stack((mult_corr1, mult_corr2)))
-add_corr_t = torch.from_dlpack(cp.stack((add_corr1, add_corr2)))
-adjoint_ones_t = torch.from_dlpack(cp.stack((adjoint_ones1, adjoint_ones2)))
+img_batch_t = torch.from_dlpack(img_batch)
+data_batch_t = torch.from_dlpack(data_batch)
+mult_corr_batch_t = torch.from_dlpack(mult_corr_batch)
+add_corr_batch_t = torch.from_dlpack(add_corr_batch)
+adjoint_ones_batch_t = torch.from_dlpack(adjoint_ones_batch)
 
 #----------------------------------------------------------------------
 #----------------------------------------------------------------------
 #----------------------------------------------------------------------
 
 # run torch MLEM using torch layers
-x0_t = torch.ones((2, ) + projector_with_res_model.in_shape,
-                  device=data_t.device,
-                  dtype=torch.float32)
+x0_batch_t = torch.ones((num_images, ) + projector_with_res_model.in_shape,
+                        device=data_batch_t.device,
+                        dtype=torch.float32)
 
 # setup the module for the Poisson EM update (data fidelity)
 em_module = PoissonEMModule(projector_with_res_model)
+
+#---------------------------------------------------------------------------
+#---------------------------------------------------------------------------
+#---------------------------------------------------------------------------
+
+# setup the unrolled MLEM network
+num_iter_mlem = 100
+mlem_net = UnrolledVarNet(em_module,
+                          num_iterations=num_iter_mlem,
+                          neural_net=None)
+
+# perform MLEM with unrolled network
+x_mlem_batch_t = mlem_net.forward(x0_batch_t,
+                                  data_batch_t,
+                                  mult_corr_batch_t,
+                                  add_corr_batch_t,
+                                  adjoint_ones_batch_t,
+                                  verbose=False)
+
+#----------------------------------------------------------------------
+#----------------------------------------------------------------------
+#----------------------------------------------------------------------
 
 # setup a minial convolutional network
 device = 'cuda:0'
@@ -437,28 +473,14 @@ conv_net['relu_f'] = torch.nn.PReLU(device=device, dtype=dtype)
 
 conv_net = torch.nn.Sequential(conv_net)
 
-#---------------------------------------------------------------------------
-#---------------------------------------------------------------------------
-#---------------------------------------------------------------------------
-
-# setup the unrolled MLEM network
-num_iter_mlem = 100
-mlem_net = UnrolledVarNet(em_module,
-                          num_iterations=num_iter_mlem,
-                          neural_net=None)
-
-# perform MLEM with unrolled network
-x_mlem_t = mlem_net.forward(x0_t,
-                            data_t,
-                            mult_corr_t,
-                            add_corr_t,
-                            adjoint_ones_t,
-                            verbose=False)
+#----------------------------------------------------------------------
+#----------------------------------------------------------------------
+#----------------------------------------------------------------------
 
 # train the varnet
 var_net = UnrolledVarNet(em_module, num_iterations=20, neural_net=conv_net)
 
-num_epochs = 3000
+num_epochs = 2000
 learning_rate = 1e-3
 loss_fn = torch.nn.MSELoss()
 optimizer = torch.optim.Adam(var_net.parameters(), lr=learning_rate)
@@ -467,14 +489,14 @@ training_loss = np.zeros(num_epochs)
 
 # feed a minibatch through the network
 for epoch in range(num_epochs):
-    x_t = var_net.forward(x_mlem_t,
-                          data_t,
-                          mult_corr_t,
-                          add_corr_t,
-                          adjoint_ones_t,
-                          verbose=False)
+    x_batch_t = var_net.forward(x_mlem_batch_t,
+                                data_batch_t,
+                                mult_corr_batch_t,
+                                add_corr_batch_t,
+                                adjoint_ones_batch_t,
+                                verbose=False)
 
-    loss = loss_fn(x_t, img)
+    loss = loss_fn(x_batch_t, img_batch_t)
     training_loss[epoch] = loss.item()
 
     if epoch % 10 == 0:
@@ -491,14 +513,8 @@ print('')
 #----------------------------------------------------------------------
 
 # convert recon to cupy array for visualization
-x_mlem = cp.ascontiguousarray(cp.from_dlpack(x_mlem_t.detach()))
-x = cp.ascontiguousarray(cp.from_dlpack(x_t.detach()))
-img = cp.stack((img1, img2))
-img_fwd = cp.stack((img_fwd1, img_fwd2))
-data = cp.ascontiguousarray(cp.from_dlpack(data_t.detach()))
-adjoint_ones = cp.ascontiguousarray(cp.from_dlpack(adjoint_ones_t.detach()))
-mult_corr = cp.ascontiguousarray(cp.from_dlpack(mult_corr_t.detach()))
-add_corr = cp.ascontiguousarray(cp.from_dlpack(add_corr_t.detach()))
+x_mlem_batch = cp.ascontiguousarray(cp.from_dlpack(x_mlem_batch_t.detach()))
+x_batch = cp.ascontiguousarray(cp.from_dlpack(x_batch_t.detach()))
 
 #----------------------------------------------------------------------
 #----------------------------------------------------------------------
@@ -506,30 +522,30 @@ add_corr = cp.ascontiguousarray(cp.from_dlpack(add_corr_t.detach()))
 
 im_kwargs = dict(origin='lower', cmap='Greys')
 
-for i in range(2):
+for i in range(4):
     fig2, ax2 = plt.subplots(2, 4, figsize=(4 * 4, 2 * 4))
-    im00 = ax2[0, 0].imshow(tonumpy(img_fwd[i, ...], xp),
+    im00 = ax2[0, 0].imshow(tonumpy(img_fwd_batch[i, ...], xp),
                             cmap='Greys',
-                            vmax=1.25 * float(img_fwd[i, ...].max()))
-    im01 = ax2[0, 1].imshow(tonumpy(data[i, ...], xp),
+                            vmax=1.25 * float(img_fwd_batch[i, ...].max()))
+    im01 = ax2[0, 1].imshow(tonumpy(data_batch[i, ...], xp),
                             cmap='Greys',
-                            vmax=1.25 * float(img_fwd[i, ...].max()))
-    im02 = ax2[0, 2].imshow(tonumpy(mult_corr[i, ...], xp),
+                            vmax=1.25 * float(img_fwd_batch[i, ...].max()))
+    im02 = ax2[0, 2].imshow(tonumpy(mult_corr_batch[i, ...], xp),
                             cmap='Greys',
                             vmin=0,
                             vmax=1)
-    im03 = ax2[0, 3].imshow(tonumpy(add_corr[i, ...], xp), cmap='Greys')
+    im03 = ax2[0, 3].imshow(tonumpy(add_corr_batch[i, ...], xp), cmap='Greys')
 
-    im10 = ax2[1, 0].imshow(tonumpy(img[i, ...].squeeze(), xp).T,
-                            vmax=1.2 * img[i, ...].max(),
+    im10 = ax2[1, 0].imshow(tonumpy(img_batch[i, ...].squeeze(), xp).T,
+                            vmax=1.2 * img_batch[i, ...].max(),
                             **im_kwargs)
     im11 = ax2[1, 1].imshow(
-        tonumpy(adjoint_ones[i, ...].squeeze(), xp).T, **im_kwargs)
-    im12 = ax2[1, 2].imshow(tonumpy(x_mlem[i, ...].squeeze(), xp).T,
-                            vmax=1.2 * img[i, ...].max(),
+        tonumpy(adjoint_ones_batch[i, ...].squeeze(), xp).T, **im_kwargs)
+    im12 = ax2[1, 2].imshow(tonumpy(x_mlem_batch[i, ...].squeeze(), xp).T,
+                            vmax=1.2 * img_batch[i, ...].max(),
                             **im_kwargs)
-    im13 = ax2[1, 3].imshow(tonumpy(x[i, ...].squeeze(), xp).T,
-                            vmax=1.2 * img[i, ...].max(),
+    im13 = ax2[1, 3].imshow(tonumpy(x_batch[i, ...].squeeze(), xp).T,
+                            vmax=1.2 * img_batch[i, ...].max(),
                             **im_kwargs)
 
     ax2[0, 0].set_title('Ax', fontsize='small')
@@ -564,7 +580,7 @@ fig3, ax3 = plt.subplots(1, 1)
 ax3.plot(training_loss)
 ax3.set_xlabel('epoch')
 ax3.set_ylabel('training loss')
-ax3.set_ylim(0, training_loss[20:].max())
+ax3.set_ylim(None, training_loss[20:].max())
 ax3.grid(ls=':')
 fig3.tight_layout()
 fig3.show()
