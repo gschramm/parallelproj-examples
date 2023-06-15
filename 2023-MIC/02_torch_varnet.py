@@ -2,6 +2,7 @@
 
 import torch
 
+import numpy as np
 import cupy as xp
 import cupy as cp
 import cupyx.scipy.ndimage as ndi
@@ -12,6 +13,24 @@ from parallelproj.utils import tonumpy
 
 import matplotlib.pyplot as plt
 import collections
+
+
+def generate_random_image(n0, n1, n2):
+    bg_img = xp.zeros((n0, n1, n2)).astype(xp.float32)
+    bg_img[:, (n1 // 4):((3 * n1) // 4), (n2 // 4):((3 * n2) // 4)] = 1
+
+    tmp = bg_img.copy()
+    tmp *= xp.random.rand(n0, n1, n2).astype(xp.float32)
+    tmp = (ndi.gaussian_filter(tmp, 1.5) > 0.52)
+
+    label_img, num_labels = ndi.label(tmp)
+
+    img = xp.zeros((n0, n1, n2)).astype(xp.float32)
+    for i in range(1, num_labels + 1):
+        inds = xp.where(label_img == i)
+        img[inds] = 2 * xp.random.rand() + 1
+
+    return bg_img + img
 
 
 class LinearOperatorForwardLayer(torch.autograd.Function):
@@ -198,14 +217,18 @@ class PoissonEMModule(torch.nn.Module):
 class UnrolledVarNet(torch.nn.Module):
     """unrolled varaitional network consisting of a PoissonEMModule and neural network blocks"""
 
-    def __init__(self, poisson_em_module: torch.nn.Module,
-                 neural_net: torch.nn.Module, num_iterations: int) -> None:
+    def __init__(self,
+                 poisson_em_module: torch.nn.Module,
+                 num_iterations: int,
+                 neural_net: torch.nn.Module | None = None,
+                 init_net_weight: float = 1.0) -> None:
         super().__init__()
         self._poisson_em_module = poisson_em_module
-        self._num_iterations = num_iterations
-
         self._neural_net = neural_net
-        self._neural_net_weight = torch.nn.Parameter(torch.tensor(1.0))
+
+        self._num_iterations = num_iterations
+        self._neural_net_weight = torch.nn.Parameter(
+            torch.tensor(init_net_weight))
 
     def forward(self,
                 x: torch.Tensor,
@@ -242,14 +265,14 @@ class UnrolledVarNet(torch.nn.Module):
         for i in range(self._num_iterations):
             if verbose:
                 print(f'iteration {(i+1):04} / {num_iter:04}', end='\r')
-            y_data = self._poisson_em_module(y, data,
-                                             multiplicative_correction,
-                                             additive_correction, adjoint_ones)
+            y = self._poisson_em_module(y, data, multiplicative_correction,
+                                        additive_correction, adjoint_ones)
 
             # pytorch convnets expect input tensors of shape (batch_size, num_channels, spatial_shape)
             # here we just add a dummy channel dimension
-            y_net = self._neural_net(y.unsqueeze(1))[:, 0, ...]
-            y = torch.nn.ReLU()(y_data + self._neural_net_weight * y_net)
+            if self._neural_net is not None:
+                y_net = self._neural_net(y.unsqueeze(1))[:, 0, ...]
+                y = torch.nn.ReLU()(y + self._neural_net_weight * y_net)
 
         if verbose: print('')
 
@@ -274,13 +297,8 @@ voxel_size = xp.array([2., 2., 2.]).astype(xp.float32)
 img_origin = ((-xp.array(img_shape) / 2 + 0.5) * voxel_size).astype(xp.float32)
 
 # setup a 2 test images
-img1 = xp.zeros((n0, n1, n2)).astype(xp.float32)
-img1[:, (n1 // 4):((3 * n1) // 4), (n2 // 4):((3 * n2) // 4)] = 1
-img1[:, (n1 // 4):(n1 // 3), (n2 // 4):(n2 // 3)] = 3
-
-img2 = xp.zeros((n0, n1, n2)).astype(xp.float32)
-img2[:, :(n1 // 2), :(n2 // 2)] = 1
-img2[:, :(n1 // 8), :(n2 // 8)] = 2
+img1 = generate_random_image(n0, n1, n2)
+img2 = generate_random_image(n0, n1, n2)
 
 #----------------------------------------------------------------------
 #----------------------------------------------------------------------
@@ -356,6 +374,7 @@ adjoint_ones1 = projector_with_res_model.adjoint(mult_corr1)
 adjoint_ones2 = projector_with_res_model.adjoint(mult_corr2)
 
 # create torch "mini-batch" tensors
+img = torch.from_dlpack(cp.stack((img1, img2)))
 data_t = torch.from_dlpack(cp.stack((data1, data2)))
 mult_corr_t = torch.from_dlpack(cp.stack((mult_corr1, mult_corr2)))
 add_corr_t = torch.from_dlpack(cp.stack((add_corr1, add_corr2)))
@@ -366,9 +385,6 @@ adjoint_ones_t = torch.from_dlpack(cp.stack((adjoint_ones1, adjoint_ones2)))
 #----------------------------------------------------------------------
 
 # run torch MLEM using torch layers
-
-num_iter = 100
-
 x0_t = torch.ones((2, ) + projector_with_res_model.in_shape,
                   device=data_t.device,
                   dtype=torch.float32)
@@ -379,41 +395,103 @@ em_module = PoissonEMModule(projector_with_res_model)
 # setup a minial convolutional network
 device = 'cuda:0'
 dtype = torch.float32
-num_features = 5
+num_features = 7
+num_hidden_layers = 5
 kernel_size = (1, 3, 3)
 conv_net = collections.OrderedDict()
-conv_net['conv_1'] = torch.nn.Conv3d(1,
-                                     num_features,
-                                     kernel_size,
+conv_net['conv_0a'] = torch.nn.Conv3d(1,
+                                      num_features,
+                                      kernel_size,
+                                      padding='same',
+                                      device=device,
+                                      dtype=dtype)
+conv_net['conv_0b'] = torch.nn.Conv3d(num_features,
+                                      num_features,
+                                      kernel_size,
+                                      padding='same',
+                                      device=device,
+                                      dtype=dtype)
+conv_net['relu_0'] = torch.nn.PReLU(device=device, dtype=dtype)
+
+for i in range(num_hidden_layers):
+    conv_net[f'conv_{i+1}a'] = torch.nn.Conv3d(num_features,
+                                               num_features,
+                                               kernel_size,
+                                               padding='same',
+                                               device=device,
+                                               dtype=dtype)
+    conv_net[f'conv_{i+1}b'] = torch.nn.Conv3d(num_features,
+                                               num_features,
+                                               kernel_size,
+                                               padding='same',
+                                               device=device,
+                                               dtype=dtype)
+    conv_net[f'relu_{i+1}'] = torch.nn.PReLU(device=device, dtype=dtype)
+
+conv_net['conv_f'] = torch.nn.Conv3d(num_features,
+                                     1, (1, 1, 1),
                                      padding='same',
                                      device=device,
                                      dtype=dtype)
-conv_net['prelu_1'] = torch.nn.PReLU(device=device)
-conv_net['conv_2'] = torch.nn.Conv3d(5,
-                                     num_features,
-                                     kernel_size,
-                                     padding='same',
-                                     device=device,
-                                     dtype=dtype)
-conv_net['prelu_2'] = torch.nn.PReLU(device=device)
+conv_net['relu_f'] = torch.nn.PReLU(device=device, dtype=dtype)
+
 conv_net = torch.nn.Sequential(conv_net)
 
+#---------------------------------------------------------------------------
+#---------------------------------------------------------------------------
+#---------------------------------------------------------------------------
+
 # setup the unrolled MLEM network
-var_net = UnrolledVarNet(em_module, conv_net, num_iter)
+num_iter_mlem = 100
+mlem_net = UnrolledVarNet(em_module,
+                          num_iterations=num_iter_mlem,
+                          neural_net=None)
+
+# perform MLEM with unrolled network
+x_mlem_t = mlem_net.forward(x0_t,
+                            data_t,
+                            mult_corr_t,
+                            add_corr_t,
+                            adjoint_ones_t,
+                            verbose=False)
+
+# train the varnet
+var_net = UnrolledVarNet(em_module, num_iterations=20, neural_net=conv_net)
+
+num_epochs = 3000
+learning_rate = 1e-3
+loss_fn = torch.nn.MSELoss()
+optimizer = torch.optim.Adam(var_net.parameters(), lr=learning_rate)
+
+training_loss = np.zeros(num_epochs)
 
 # feed a minibatch through the network
-x_t = var_net.forward(x0_t,
-                      data_t,
-                      mult_corr_t,
-                      add_corr_t,
-                      adjoint_ones_t,
-                      verbose=True)
+for epoch in range(num_epochs):
+    x_t = var_net.forward(x_mlem_t,
+                          data_t,
+                          mult_corr_t,
+                          add_corr_t,
+                          adjoint_ones_t,
+                          verbose=False)
+
+    loss = loss_fn(x_t, img)
+    training_loss[epoch] = loss.item()
+
+    if epoch % 10 == 0:
+        print(f'{epoch:05} / {num_epochs:05}: {loss.item():.2E}', end='\r')
+
+    optimizer.zero_grad()
+    loss.backward()
+    optimizer.step()
+
+print('')
 
 #----------------------------------------------------------------------
 #----------------------------------------------------------------------
 #----------------------------------------------------------------------
 
 # convert recon to cupy array for visualization
+x_mlem = cp.ascontiguousarray(cp.from_dlpack(x_mlem_t.detach()))
 x = cp.ascontiguousarray(cp.from_dlpack(x_t.detach()))
 img = cp.stack((img1, img2))
 img_fwd = cp.stack((img_fwd1, img_fwd2))
@@ -447,12 +525,10 @@ for i in range(2):
                             **im_kwargs)
     im11 = ax2[1, 1].imshow(
         tonumpy(adjoint_ones[i, ...].squeeze(), xp).T, **im_kwargs)
-    im12 = ax2[1, 2].imshow(tonumpy(x[i, ...].squeeze(), xp).T,
+    im12 = ax2[1, 2].imshow(tonumpy(x_mlem[i, ...].squeeze(), xp).T,
                             vmax=1.2 * img[i, ...].max(),
                             **im_kwargs)
-    im13 = ax2[1, 3].imshow(tonumpy(
-        ndi.gaussian_filter(x[i, ...], 6.0 / (2.35 * voxel_size)).squeeze(),
-        xp).T,
+    im13 = ax2[1, 3].imshow(tonumpy(x[i, ...].squeeze(), xp).T,
                             vmax=1.2 * img[i, ...].max(),
                             **im_kwargs)
 
@@ -462,9 +538,8 @@ for i in range(2):
     ax2[0, 3].set_title('add. correction sinogram', fontsize='small')
     ax2[1, 0].set_title('image - x', fontsize='small')
     ax2[1, 1].set_title('sensitivity image - A^H 1', fontsize='small')
-    ax2[1, 2].set_title(f'MLEM - {num_iter} it.', fontsize='small')
-    ax2[1, 3].set_title(f'post-smoothed MLEM - {num_iter} it.',
-                        fontsize='small')
+    ax2[1, 2].set_title(f'MLEM - {num_iter_mlem} it.', fontsize='small')
+    ax2[1, 3].set_title(f'output of varnet', fontsize='small')
 
     cb00 = fig2.colorbar(im00, fraction=0.03)
     cb01 = fig2.colorbar(im01, fraction=0.03)
@@ -484,3 +559,12 @@ for i in range(2):
 
     fig2.tight_layout()
     fig2.show()
+
+fig3, ax3 = plt.subplots(1, 1)
+ax3.plot(training_loss)
+ax3.set_xlabel('epoch')
+ax3.set_ylabel('training loss')
+ax3.set_ylim(0, training_loss[20:].max())
+ax3.grid(ls=':')
+fig3.tight_layout()
+fig3.show()
