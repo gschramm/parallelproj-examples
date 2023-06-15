@@ -181,19 +181,22 @@ print('')
 # ### show all MLEM reconstructions
 
 # +
-figm, axm = plt.subplots(1,
-                         num_images,
-                         figsize=(2.5 * num_images, 2.5 * 1),
-                         squeeze=False)
+figm, axm = plt.subplots(2, num_images, figsize=(2.5 * num_images, 2.5 * 2))
 for i in range(num_images):
-    im0 = axm[0, i].imshow(tonumpy(x_batch[i, n0 // 2, ...], xp),
+    im0 = axm[0, i].imshow(tonumpy(img_batch[i, n0 // 2, ...], xp),
+                           cmap='Greys',
+                           vmin=0,
+                           vmax=float(1.2 * img_batch.max()))
+    im1 = axm[1, i].imshow(tonumpy(x_batch[i, n0 // 2, ...], xp),
                            cmap='Greys',
                            vmin=0,
                            vmax=float(1.2 * img_batch.max()))
 
     cb0 = figm.colorbar(im0, fraction=0.03, location='bottom')
+    cb1 = figm.colorbar(im1, fraction=0.03, location='bottom')
 
-    axm[0, i].set_title(f'MLEM {i:03} - {num_iter:03} it.', fontsize='medium')
+    axm[0, i].set_title(f'ground truth image {i:03}', fontsize='medium')
+    axm[1, i].set_title(f'MLEM {i:03} - {num_iter:03} it.', fontsize='medium')
 
 for axx in axm.ravel():
     axx.axis('off')
