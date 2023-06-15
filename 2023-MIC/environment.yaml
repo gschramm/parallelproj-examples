@@ -8,5 +8,8 @@ dependencies:
   - matplotlib
   - scipy
   - ipython
+  - jupyter
+  - jupyter_nbextensions_configurator
+  - jupytext
   - pytorch >= 2.0
   - cupy

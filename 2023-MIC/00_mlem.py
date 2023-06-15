@@ -1,23 +1,19 @@
-"""example that shows how to MLEM reconstruction on cupy GPU arrays"""
+# ## example that shows how to MLEM reconstruction on cupy GPU arrays
 
-#import numpy as xp
-#import scipy.ndimage as ndi
-
-import cupy as xp
-import cupyx.scipy.ndimage as ndi
+# +
+import numpy as xp
+import scipy.ndimage as ndi
 
 from parallelproj.operators import CompositeLinearOperator, ElementwiseMultiplicationOperator, GaussianFilterOperator
 from parallelproj.projectors import ParallelViewProjector2D
 from parallelproj.utils import tonumpy
 
 import matplotlib.pyplot as plt
+# -
 
-#----------------------------------------------------------------------
-#----------------------------------------------------------------------
-#----------------------------------------------------------------------
+# ### setup a test image
 
-# setup a test image
-
+# +
 # image dimensions
 n0, n1, n2 = (1, 128, 128)
 img_shape = (n0, n1, n2)
@@ -32,12 +28,12 @@ img_origin = ((-xp.array(img_shape) / 2 + 0.5) * voxel_size).astype(xp.float32)
 img = xp.zeros((n0, n1, n2)).astype(xp.float32)
 img[:, (n1 // 4):((3 * n1) // 4), (n2 // 4):((3 * n2) // 4)] = 1
 img[:, (n1 // 4):(n1 // 3), (n2 // 4):(n2 // 3)] = 3
+# -
 
-#----------------------------------------------------------------------
-#----------------------------------------------------------------------
-#----------------------------------------------------------------------
+# ### setup a non-tof projector
 
-# setup the coordinates for projections along parallel views
+# +
+¶# setup the coordinates for projections along parallel views
 num_rad = 223
 num_phi = 190
 # "radius" of the scanner in mm
@@ -51,27 +47,22 @@ projector = ParallelViewProjector2D(img_shape, r, view_angles, scanner_R,
                                     img_origin, voxel_size, xp)
 
 fig = projector.show_views(image=img, cmap='Greys')
-fig.show()
+# -
 
-#----------------------------------------------------------------------
-#----------------------------------------------------------------------
-#----------------------------------------------------------------------
-# generate the attenuation image and sinogram
+# ### generate an attenuation and sensitivity sinogram
 
+# +
 # the attenuation coefficients in 1/mm
 att_img = 0.01 * (img > 0).astype(xp.float32)
 att_sino = xp.exp(-projector(att_img))
 
 # generate a constant sensitivity sinogram
 sens_sino = xp.full(projector.out_shape, 1., dtype=xp.float32)
+# -
 
-#----------------------------------------------------------------------
-#----------------------------------------------------------------------
-#----------------------------------------------------------------------
+# ### setup the complete forward model consisting of image-based resolution model
 
-# setup the complete forward model consisting of image-based resolution model
-# projector and multiplication by sensitivity
-
+# +
 image_space_filter = GaussianFilterOperator(projector.in_shape,
                                             ndi,
                                             xp,
@@ -84,11 +75,11 @@ fwd_model = CompositeLinearOperator(
 
 fwd_model.adjointness_test(verbose=True)
 fwd_model_norm = fwd_model.norm()
+# -
 
-#----------------------------------------------------------------------
-#----------------------------------------------------------------------
-#----------------------------------------------------------------------
+# ### generate noise-free and noisy data
 
+# +
 # apply the forward model to generate noise-free data
 img_fwd = fwd_model(img)
 
@@ -100,13 +91,13 @@ data = xp.random.poisson(img_fwd + contamination)
 
 # do ack projection (the adjoint of the forward projection)
 data_back = fwd_model.adjoint(data)
+# -
 
-#----------------------------------------------------------------------
-#----------------------------------------------------------------------
-#----------------------------------------------------------------------
+# ### run MLEM
 
+# +
 # run MLEM
-num_iter = 400
+num_iter = 100
 
 x0 = xp.ones(img.shape, dtype=xp.float32)
 x = x0.copy()
@@ -117,11 +108,11 @@ for i in range(num_iter):
     print(f'it {(i+1):04} / {num_iter:04}', end='\r')
     exp = fwd_model(x) + contamination
     x *= (fwd_model.adjoint(data / exp) / sens_image)
+# -
 
-#----------------------------------------------------------------------
-#----------------------------------------------------------------------
-#----------------------------------------------------------------------
+# ### show the results
 
+# +
 im_kwargs = dict(origin='lower', cmap='Greys')
 
 fig2, ax2 = plt.subplots(2, 4, figsize=(4 * 4, 2 * 4))
@@ -170,4 +161,5 @@ for i in range(4):
     ax2[1, i].set_ylabel('x2')
 
 fig2.tight_layout()
-fig2.show()
+
+plt.show()
