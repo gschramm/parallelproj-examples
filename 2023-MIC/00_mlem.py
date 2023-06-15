@@ -9,14 +9,13 @@ import numpy as np
 import cupy as xp
 import cupyx.scipy.ndimage as ndi
 
-from parallelproj.operators import CompositeLinearOperator, ElementwiseMultiplicationOperator, GaussianFilterOperator
+from parallelproj.operators import CompositeLinearOperator, GaussianFilterOperator
 from parallelproj.projectors import ParallelViewProjector2D
 from parallelproj.utils import tonumpy
 
 import matplotlib.pyplot as plt
 
 from utils import generate_random_image
-from shapes import random_2d_shape_image
 # -
 
 # ### setup a batch of "random" ground truth images
