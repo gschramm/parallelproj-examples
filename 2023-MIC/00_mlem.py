@@ -1,12 +1,11 @@
-# ## example that shows how to MLEM reconstruction on cupy GPU arrays
+# # Unrolled MLEM and variational networks for Poisson projection data
+
+# ## Part 1: MLEM using cupy GPU arrays
 
 # +
 import numpy as np
 
-# run script either in numpy mode using CPU arrays or in cupy mode using GPU arrays
-#import numpy as xp
-#import scipy.ndimage as ndi
-import cupy as xp
+import cupy as cp
 import cupyx.scipy.ndimage as ndi
 
 from parallelproj.operators import CompositeLinearOperator, GaussianFilterOperator
@@ -23,7 +22,7 @@ from utils import generate_random_image
 # +
 # seed the random generator, since we are using random images
 seed = 0
-xp.random.seed(seed)
+cp.random.seed(seed)
 np.random.seed(seed)
 # image dimensions
 n = 128
@@ -31,15 +30,15 @@ num_images = 5
 img_shape = (1, n, n)
 
 # voxel size of the image
-voxel_size = xp.array([2., 2., 2.]).astype(xp.float32)
+voxel_size = cp.array([2., 2., 2.]).astype(cp.float32)
 
 # image origin -> world coordinates of the [0,0,0] voxel
-img_origin = ((-xp.array(img_shape) / 2 + 0.5) * voxel_size).astype(xp.float32)
+img_origin = ((-cp.array(img_shape) / 2 + 0.5) * voxel_size).astype(cp.float32)
 
-img_batch = xp.zeros((num_images, ) + img_shape, dtype=xp.float32)
+img_batch = cp.zeros((num_images, ) + img_shape, dtype=cp.float32)
 
 for i in range(num_images):
-    img_batch[i, 0, ...] = generate_random_image(n, xp, ndi)
+    img_batch[i, 0, ...] = generate_random_image(n, cp, ndi)
 # -
 
 # ### setup a simple "2D" parallel view non-tof projector
@@ -52,11 +51,11 @@ num_phi = 190
 scanner_R = 350.
 
 # radial coordinates of the projection views in mm
-r = xp.linspace(-200, 200, num_rad, dtype=xp.float32)
-view_angles = xp.linspace(0, xp.pi, num_phi, endpoint=False, dtype=xp.float32)
+r = cp.linspace(-200, 200, num_rad, dtype=cp.float32)
+view_angles = cp.linspace(0, cp.pi, num_phi, endpoint=False, dtype=cp.float32)
 
 projector = ParallelViewProjector2D(img_shape, r, view_angles, scanner_R,
-                                    img_origin, voxel_size, xp)
+                                    img_origin, voxel_size, cp)
 # -
 
 # ### show the projector geometry
@@ -66,29 +65,26 @@ fig_proj = projector.show_views(image=img_batch[0, ...], cmap='Greys')
 # ### generate the attenuation images, attenuation sinograms, and sensitivity sinograms for our forward model
 
 # +
-att_img_batch = xp.zeros((num_images, ) + img_shape, dtype=xp.float32)
-att_sino_batch = xp.zeros((num_images, num_phi, num_rad), dtype=xp.float32)
+att_img_batch = cp.zeros((num_images, ) + img_shape, dtype=cp.float32)
+att_sino_batch = cp.zeros((num_images, num_phi, num_rad), dtype=cp.float32)
 
 for i in range(num_images):
     # the attenuation coefficients in 1/mm
-    att_img_batch[i, ...] = 0.01 * (img_batch[i, ...] > 0).astype(xp.float32)
-    att_sino_batch[i, ...] = xp.exp(-projector(att_img_batch[i, ...]))
+    att_img_batch[i, ...] = 0.01 * (img_batch[i, ...] > 0).astype(cp.float32)
+    att_sino_batch[i, ...] = cp.exp(-projector(att_img_batch[i, ...]))
 
 # generate a constant sensitivity sinogram
-sens_sino_batch = xp.full((num_images, ) + projector.out_shape,
+sens_sino_batch = cp.full((num_images, ) + projector.out_shape,
                           0.5,
-                          dtype=xp.float32)
+                          dtype=cp.float32)
 
 # generate sinograms of multiplicative corrections (attention times sensitivity)
 mult_corr_batch = att_sino_batch * sens_sino_batch
-# -
-
-# ###setup the complete forward model consisting of image-based resolution model projector and multiplication by sensitivity
 
 # +
 image_space_filter = GaussianFilterOperator(projector.in_shape,
                                             ndi,
-                                            xp,
+                                            cp,
                                             sigma=4.5 / (2.35 * voxel_size))
 
 # setup a projector including an image-based resolution model
@@ -97,21 +93,21 @@ projector_with_res_model = CompositeLinearOperator(
 
 # +
 # apply the forward model to generate noise-free data
-img_fwd_batch = xp.zeros((num_images, num_phi, num_rad), dtype=xp.float32)
-add_corr_batch = xp.zeros((num_images, num_phi, num_rad), dtype=xp.float32)
-adjoint_ones_batch = xp.zeros((num_images, ) + img_shape, dtype=xp.float32)
+img_fwd_batch = cp.zeros((num_images, num_phi, num_rad), dtype=cp.float32)
+add_corr_batch = cp.zeros((num_images, num_phi, num_rad), dtype=cp.float32)
+adjoint_ones_batch = cp.zeros((num_images, ) + img_shape, dtype=cp.float32)
 
 for i in range(num_images):
     img_fwd_batch[i, ...] = mult_corr_batch[i, ...] * projector_with_res_model(
         img_batch[i, ...])
 
     # generate a constant contamination sinogram
-    add_corr_batch[i, ...] = xp.full(img_fwd_batch[i, ...].shape,
+    add_corr_batch[i, ...] = cp.full(img_fwd_batch[i, ...].shape,
                                      0.5 * img_fwd_batch[i, ...].mean(),
-                                     dtype=xp.float32)
+                                     dtype=cp.float32)
 
 # generate noisy data
-data_batch = xp.random.poisson(img_fwd_batch + add_corr_batch)
+data_batch = cp.random.poisson(img_fwd_batch + add_corr_batch)
 # -
 
 # ### generate the sensitivity images (adjoint operator applied to a sinogram of ones)
@@ -126,19 +122,19 @@ for i in range(num_images):
 # +
 fig, ax = plt.subplots(4, num_images, figsize=(2.5 * num_images, 2.5 * 4))
 for i in range(num_images):
-    im0 = ax[0, i].imshow(tonumpy(img_batch[i, 0, ...], xp),
+    im0 = ax[0, i].imshow(tonumpy(img_batch[i, 0, ...], cp),
                           cmap='Greys',
                           vmin=0,
                           vmax=float(1.2 * img_batch.max()))
-    im1 = ax[1, i].imshow(tonumpy(att_img_batch[i, 0, ...], xp),
+    im1 = ax[1, i].imshow(tonumpy(att_img_batch[i, 0, ...], cp),
                           cmap='Greys',
                           vmin=0,
                           vmax=float(att_img_batch.max()))
-    im2 = ax[2, i].imshow(tonumpy(mult_corr_batch[i, ...], xp),
+    im2 = ax[2, i].imshow(tonumpy(mult_corr_batch[i, ...], cp),
                           cmap='Greys',
                           vmin=0,
                           vmax=float(mult_corr_batch.max()))
-    im3 = ax[3, i].imshow(tonumpy(data_batch[i, ...], xp),
+    im3 = ax[3, i].imshow(tonumpy(data_batch[i, ...], cp),
                           cmap='Greys',
                           vmin=0,
                           vmax=float(data_batch.max()))
@@ -163,18 +159,17 @@ fig.tight_layout()
 # +
 num_iter = 100
 
-x0_batch = xp.ones(img_batch.shape, dtype=xp.float32)
-x_batch = x0_batch.copy()
+x0_mlem_batch = cp.ones(img_batch.shape, dtype=cp.float32)
+x_mlem_batch = x0_batch.copy()
 
 for it in range(num_iter):
     print(f'it {(it+1):04} / {num_iter:04}', end='\r')
     for ib in range(num_images):
         exp = mult_corr_batch[ib, ...] * projector_with_res_model(
-            x_batch[ib, ...]) + add_corr_batch[ib, ...]
-        x_batch[ib, ...] *= (projector_with_res_model.adjoint(
+            x_mlem_batch[ib, ...]) + add_corr_batch[ib, ...]
+        x_mlem_batch[ib, ...] *= (projector_with_res_model.adjoint(
             mult_corr_batch[ib, ...] * data_batch[ib, ...] / exp) /
                              adjoint_ones_batch[ib, ...])
-print('')
 # -
 
 # ### show all MLEM reconstructions
@@ -182,11 +177,11 @@ print('')
 # +
 figm, axm = plt.subplots(2, num_images, figsize=(2.5 * num_images, 2.5 * 2))
 for i in range(num_images):
-    im0 = axm[0, i].imshow(tonumpy(img_batch[i, 0, ...], xp),
+    im0 = axm[0, i].imshow(tonumpy(img_batch[i, 0, ...], cp),
                            cmap='Greys',
                            vmin=0,
                            vmax=float(1.2 * img_batch.max()))
-    im1 = axm[1, i].imshow(tonumpy(x_batch[i, 0, ...], xp),
+    im1 = axm[1, i].imshow(tonumpy(x_mlem_batch[i, 0, ...], cp),
                            cmap='Greys',
                            vmin=0,
                            vmax=float(1.2 * img_batch.max()))
@@ -200,5 +195,171 @@ for i in range(num_images):
 for axx in axm.ravel():
     axx.axis('off')
 figm.tight_layout()
+# -
 
-plt.show()
+# ---
+# ---
+# ---
+# ---
+# ---
+# ---
+# ---
+# ---
+# ---
+
+# ## Part 2: MLEM using an unrolled torch network
+
+# +
+# define a torch module that performs an MLEM update - possible with zero copy
+
+
+import torch
+# import a custom torch module that computes an MLEM update
+from torch_utils import PoissonEMModule
+
+em_module = PoissonEMModule(projector_with_res_model)
+
+# +
+# convert our cupy GPU arrays to torch GPU arrays 
+# pytorch and cuda support zero copy data exchange
+# see https://docs.cupy.dev/en/stable/user_guide/interoperability.html#pytorch
+
+img_batch_t = torch.from_dlpack(img_batch)
+data_batch_t = torch.from_dlpack(data_batch)
+mult_corr_batch_t = torch.from_dlpack(mult_corr_batch)
+add_corr_batch_t = torch.from_dlpack(add_corr_batch)
+adjoint_ones_batch_t = torch.from_dlpack(adjoint_ones_batch)
+
+# initialize a batch array for the reconstructions
+x0_mlem_batch_t = torch.ones(img_batch.shape, dtype=torch.float32, device = data_batch_t.device)
+x_mlem_batch_t = torch.clone(x0_batch_t)
+
+# -
+
+# run MLEM using a custom defined EM_Module
+for it in range(num_iter):
+    print(f'it {(it+1):04} / {num_iter:04}', end='\r')
+    x_mlem_batch_t = em_module.forward(x_mlem_batch_t, data_batch_t, mult_corr_batch_t,
+                                  add_corr_batch_t, adjoint_ones_batch_t)
+
+# +
+# convert the torch MLEM reconstruction array back to cupy for visualization
+x_mlem_batch_torch = cp.ascontiguousarray(cp.from_dlpack(x_mlem_batch_t.detach()))
+
+# calculate the max difference between the cupy and torch MLEM implementation
+print(f'max cupy - torch MLEM diff: {cp.abs(x_mlem_batch - x_mlem_batch_torch).max()}')
+
+# +
+# visualize the torch reconstructions
+figm, axm = plt.subplots(4, num_images, figsize=(2.5 * num_images, 2.5 * 3))
+for i in range(num_images):
+    im0 = axm[0, i].imshow(tonumpy(img_batch[i, 0, ...], cp),
+                           cmap='Greys',
+                           vmin=0,
+                           vmax=float(1.2 * img_batch.max()))
+    im1 = axm[1, i].imshow(tonumpy(x_mlem_batch[i, 0, ...], cp),
+                           cmap='Greys',
+                           vmin=0,
+                           vmax=float(1.2 * img_batch.max()))
+    im2 = axm[2, i].imshow(tonumpy(x_mlem_batch_torch[i, 0, ...], cp),
+                           cmap='Greys',
+                           vmin=0,
+                           vmax=float(1.2 * img_batch.max()))
+
+    cb0 = figm.colorbar(im0, fraction=0.03, location='bottom')
+    cb1 = figm.colorbar(im1, fraction=0.03, location='bottom')
+    cb2 = figm.colorbar(im2, fraction=0.03, location='bottom')
+
+    axm[0, i].set_title(f'ground truth image {i:03}', fontsize='medium')
+    axm[1, i].set_title(f'cupy MLEM {i:03} - {num_iter:03} it.', fontsize='medium')
+    axm[2, i].set_title(f'torch MLEM {i:03} - {num_iter:03} it.', fontsize='medium')
+
+for axx in axm.ravel():
+    axx.axis('off')
+figm.tight_layout()
+# -
+
+# ---
+# ---
+# ---
+# ---
+# ---
+# ---
+# ---
+# ---
+# ---
+
+# ## Part 3: Supervised training of a unrolled variational network
+
+# +
+from torch_utils import simple_conv_net, UnrolledVarNet
+
+# setup a simple CNN that maps an image batch onto an image batch
+conv_net = simple_conv_net(num_hidden_layers=7, num_features=7)
+
+# setup the unrolled variational network consiting of block combining MLEM and conv-net updates 
+var_net = UnrolledVarNet(em_module, num_blocks=3, neural_net=conv_net)
+
+num_epochs = 3000
+learning_rate = 1e-3
+loss_fn = torch.nn.MSELoss()
+optimizer = torch.optim.Adam(var_net.parameters(), lr=learning_rate)
+
+training_loss = np.zeros(num_epochs)
+
+# feed a mini batch through the network
+for epoch in range(num_epochs):
+    x_varnet_batch_t = var_net.forward(x_mlem_batch_t,
+                                data_batch_t,
+                                mult_corr_batch_t,
+                                add_corr_batch_t,
+                                adjoint_ones_batch_t,
+                                verbose=False)
+
+    loss = loss_fn(x_varnet_batch_t, img_batch_t)
+    training_loss[epoch] = loss.item()
+
+    if epoch % 10 == 0:
+        print(f'epoch: {epoch:05} / {num_epochs:05} - training loss: {loss.item():.2E}', end='\r')
+
+    optimizer.zero_grad()
+    loss.backward()
+    optimizer.step()
+# -
+
+# plot the training loss
+figl, axl = plt.subplots()
+axl.plot(training_loss)
+axl.set_ylim(None,training_loss[20:].max())
+axl.grid(ls = ':')
+
+# +
+x_varnet_batch = cp.ascontiguousarray(cp.from_dlpack(x_batch_t.detach()))
+
+# visualize the torch reconstructions
+figm, axm = plt.subplots(4, num_images, figsize=(2.5 * num_images, 2.5 * 3))
+for i in range(num_images):
+    im0 = axm[0, i].imshow(tonumpy(img_batch[i, 0, ...], cp),
+                           cmap='Greys',
+                           vmin=0,
+                           vmax=float(1.2 * img_batch.max()))
+    im1 = axm[1, i].imshow(tonumpy(x_mlem_batch[i, 0, ...], cp),
+                           cmap='Greys',
+                           vmin=0,
+                           vmax=float(1.2 * img_batch.max()))
+    im2 = axm[2, i].imshow(tonumpy(x_varnet_batch[i, 0, ...], cp),
+                           cmap='Greys',
+                           vmin=0,
+                           vmax=float(1.2 * img_batch.max()))
+
+    cb0 = figm.colorbar(im0, fraction=0.03, location='bottom')
+    cb1 = figm.colorbar(im1, fraction=0.03, location='bottom')
+    cb2 = figm.colorbar(im2, fraction=0.03, location='bottom')
+
+    axm[0, i].set_title(f'ground truth image {i:03}', fontsize='medium')
+    axm[1, i].set_title(f'cupy MLEM {i:03} - {num_iter:03} it.', fontsize='medium')
+    axm[2, i].set_title(f'torch MLEM {i:03} - {num_iter:03} it.', fontsize='medium')
+
+for axx in axm.ravel():
+    axx.axis('off')
+figm.tight_layout()

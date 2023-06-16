@@ -36,6 +36,6 @@ def generate_random_image(n: int, xp: ModuleType, ndi: ModuleType):
     img = xp.zeros((n, n)).astype(xp.float32)
     for i in range(1, num_labels + 1):
         inds = xp.where(label_img == i)
-        img[inds] = 2 * xp.random.rand() + 1
+        img[inds] = 3 * xp.random.rand() - 1
 
     return bg_img + img
