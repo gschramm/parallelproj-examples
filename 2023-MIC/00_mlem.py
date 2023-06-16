@@ -302,13 +302,14 @@ from torch_utils import simple_conv_net, UnrolledVarNet, Unet3D
 
 # setup a simple CNN that maps an image batch onto an image batch
 #conv_net = simple_conv_net(num_hidden_layers=7, num_features=7)
-conv_net = Unet3D(num_features = 8, num_downsampling_layers = 3, batch_norm = False, dropout_rate = 0.05)
+conv_net = Unet3D(num_features = 16, num_downsampling_layers = 3, batch_norm = True)
 
 # setup the unrolled variational network consiting of block combining MLEM and conv-net updates
 var_net = UnrolledVarNet(em_module, num_blocks=5, neural_net=conv_net)
+var_net.eval()
 
 num_epochs = 801
-batch_size = 4
+batch_size = 8
 num_train = int(0.7 * num_images)
 learning_rate = 1e-3
 loss_fn = torch.nn.MSELoss()
@@ -319,6 +320,8 @@ validation_loss = []
 
 # feed a mini batch through the network
 for epoch in range(num_epochs):
+    var_net.train()
+    # select a random mini batch from the traning data sets
     i_batch = np.random.choice(np.arange(num_train), size = batch_size, replace = False)
     y_train_t = var_net.forward(x_mlem_batch_t[i_batch, ...],
                                 data_batch_t[i_batch, ...],
@@ -335,7 +338,8 @@ for epoch in range(num_epochs):
     optimizer.step()
 
     # calculate the validation loss
-    if epoch % 50 == 0:
+    if epoch % 10 == 0:
+        var_net.eval()
         with torch.no_grad():
             y_val_t = var_net.forward(x_mlem_batch_t[num_train:, ...],
                                       data_batch_t[num_train:, ...],
@@ -343,51 +347,78 @@ for epoch in range(num_epochs):
                                       add_corr_batch_t[num_train:, ...],
                                       adjoint_ones_batch_t[num_train:, ...],
                                       verbose=False)
+  
 
-            validation_loss.append(
+        validation_loss.append(
                 loss_fn(y_val_t, img_batch_t[num_train:, ...]).item())
 
         print(
             f'epoch: {epoch:05} / {num_epochs:05} - train loss: {loss.item():.2E} - val loss {validation_loss[-1]:.2E}',
             end='\r')
         
-print(f'\n{var_net._neural_net_weight}')
+print(f'\nconv net weights {var_net._neural_net_weight}')
+
+print(f'min training   loss {training_loss.min():.2E}')
+print(f'min validation loss {min(validation_loss):.2E}')
 
 
 # +
 # plot the training and validation loss
-
 i_train = np.arange(1, num_epochs+1)
-i_val = np.arange(len(validation_loss))*50 + 1
+i_val = np.arange(len(validation_loss))*10 + 1
 
 figl, axl = plt.subplots(1,1,figsize=(8,4))
 axl.plot(training_loss, '.-', label = 'training loss')
 axl.plot(i_val, validation_loss, '.-', label = 'validation loss')
-axl.set_ylim(None, training_loss[10:].max())
+axl.set_ylim(training_loss.min(), training_loss[10:].max())
 axl.legend()
 axl.grid(ls=':')
 
 # +
+# inference and plots of results
+var_net.eval()
+
+with torch.no_grad():
+    i_train = np.arange(num_train)
+    y_train_t = var_net.forward(x_mlem_batch_t[i_train, ...],
+                                data_batch_t[i_train, ...],
+                                mult_corr_batch_t[i_train, ...],
+                                add_corr_batch_t[i_train, ...],
+                                adjoint_ones_batch_t[i_train, ...],
+                                verbose=False)
+    
+with torch.no_grad():
+    i_val = np.arange(num_train, num_images)
+    y_val_t = var_net.forward(x_mlem_batch_t[i_val, ...],
+                                data_batch_t[i_val, ...],
+                                mult_corr_batch_t[i_val, ...],
+                                add_corr_batch_t[i_val, ...],
+                                adjoint_ones_batch_t[i_val, ...],
+                                verbose=False)
+
+
+y_train_batch = cp.ascontiguousarray(cp.from_dlpack(
+    y_train_t.detach()))
+
 y_val_batch = cp.ascontiguousarray(cp.from_dlpack(
     y_val_t.detach()))
 
 # visualize the torch reconstructions
 figm, axm = plt.subplots(4, 5, figsize=(2.5 * 5, 2.5 * 4))
 for i in range(5):
-    j = i + num_train
-    im0 = axm[0, i].imshow(tonumpy(img_batch[j, 0, ...], cp),
+    im0 = axm[0, i].imshow(tonumpy(img_batch[i, 0, ...], cp),
                            cmap='Greys',
                            vmin=0,
                            vmax=float(1.2 * img_batch.max()))
-    im1 = axm[1, i].imshow(tonumpy(x_mlem_batch[j, 0, ...], cp),
+    im1 = axm[1, i].imshow(tonumpy(x_mlem_batch[i, 0, ...], cp),
                            cmap='Greys',
                            vmin=0,
                            vmax=float(1.2 * img_batch.max()))
-    im2 = axm[2, i].imshow(tonumpy(ndi.gaussian_filter(x_mlem_batch[j, 0, ...],1.3), cp),
+    im2 = axm[2, i].imshow(tonumpy(ndi.gaussian_filter(x_mlem_batch[i, 0, ...],1.3), cp),
                            cmap='Greys',
                            vmin=0,
                            vmax=float(1.2 * img_batch.max()))
-    im3 = axm[3, i].imshow(tonumpy(y_val_batch[i, 0, ...], cp),
+    im3 = axm[3, i].imshow(tonumpy(y_train_batch[i, 0, ...], cp),
                            cmap='Greys',
                            vmin=0,
                            vmax=float(1.2 * img_batch.max()))
@@ -397,14 +428,55 @@ for i in range(5):
     cb2 = figm.colorbar(im2, fraction=0.03, location='bottom')
     cb3 = figm.colorbar(im3, fraction=0.03, location='bottom')
 
-    axm[0, i].set_title(f'ground truth image {j:03}', fontsize='medium')
-    axm[1, i].set_title(f'MLEM {j:03} - {num_iter:03} it.',
+    axm[0, i].set_title(f'ground truth image {i:03}', fontsize='medium')
+    axm[1, i].set_title(f'MLEM {i:03} - {num_iter:03} it.',
                         fontsize='medium')
-    axm[2, i].set_title(f'p.s. MLEM {j:03}',
+    axm[2, i].set_title(f'p.s. MLEM {i:03}',
                         fontsize='medium')
-    axm[3, i].set_title(f'varnet {j:03}',
+    axm[3, i].set_title(f'varnet {i:03}',
                         fontsize='medium')
 
 for axx in axm.ravel():
     axx.axis('off')
+figm.suptitle('First 5 training data sets', fontsize = 20)    
 figm.tight_layout()
+
+
+figv, axv = plt.subplots(4, 5, figsize=(2.5 * 5, 2.5 * 4))
+for i in range(5):
+    j = i + num_train
+    im0 = axv[0, i].imshow(tonumpy(img_batch[j, 0, ...], cp),
+                           cmap='Greys',
+                           vmin=0,
+                           vmax=float(1.2 * img_batch.max()))
+    im1 = axv[1, i].imshow(tonumpy(x_mlem_batch[j, 0, ...], cp),
+                           cmap='Greys',
+                           vmin=0,
+                           vmax=float(1.2 * img_batch.max()))
+    im2 = axv[2, i].imshow(tonumpy(ndi.gaussian_filter(x_mlem_batch[j, 0, ...],1.3), cp),
+                           cmap='Greys',
+                           vmin=0,
+                           vmax=float(1.2 * img_batch.max()))
+    im3 = axv[3, i].imshow(tonumpy(y_val_batch[i, 0, ...], cp),
+                           cmap='Greys',
+                           vmin=0,
+                           vmax=float(1.2 * img_batch.max()))
+
+    cb0 = figv.colorbar(im0, fraction=0.03, location='bottom')
+    cb1 = figv.colorbar(im1, fraction=0.03, location='bottom')
+    cb2 = figv.colorbar(im2, fraction=0.03, location='bottom')
+    cb3 = figv.colorbar(im3, fraction=0.03, location='bottom')
+
+    axv[0, i].set_title(f'ground truth image {j:03}', fontsize='medium')
+    axv[1, i].set_title(f'MLEM {j:03} - {num_iter:03} it.',
+                        fontsize='medium')
+    axv[2, i].set_title(f'p.s. MLEM {j:03}',
+                        fontsize='medium')
+    axv[3, i].set_title(f'varnet {j:03}',
+                        fontsize='medium')
+
+for axx in axv.ravel():
+    axx.axis('off')
+figv.suptitle('First 5 validation data sets', fontsize = 20)
+figv.tight_layout()
+

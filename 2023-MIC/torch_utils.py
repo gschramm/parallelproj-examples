@@ -189,8 +189,7 @@ class UnrolledVarNet(torch.nn.Module):
     def __init__(self,
                  poisson_em_module: torch.nn.Module,
                  num_blocks: int,
-                 neural_net: torch.nn.Module | None = None,
-                 init_net_weight: float = 1.0) -> None:
+                 neural_net: torch.nn.Module | None = None):
         """Unrolled variational network with Poisson MLEM data fidelity update
 
         Parameters
@@ -202,9 +201,6 @@ class UnrolledVarNet(torch.nn.Module):
         neural_net : torch.nn.Module | None, optional
             a torch neural network with trainable parameters
             mapping an image batch to an image batch
-        init_net_weight : float, optional
-            initial weight of the network based update when added to
-            the MLEM update, by default 1.0
         """
         super().__init__()
         self._poisson_em_module = poisson_em_module
@@ -212,7 +208,7 @@ class UnrolledVarNet(torch.nn.Module):
 
         self._num_blocks = num_blocks
         self._neural_net_weight = torch.nn.Parameter(
-            torch.tensor(init_net_weight))
+            torch.ones(self._num_blocks))
 
     def forward(self,
                 x: torch.Tensor,
@@ -257,7 +253,7 @@ class UnrolledVarNet(torch.nn.Module):
             # here we just add a dummy channel dimension
             if self._neural_net is not None:
                 y_net = self._neural_net(y.unsqueeze(1))[:, 0, ...]
-                y = torch.nn.ReLU()(y + self._neural_net_weight * y_net)
+                y = torch.nn.ReLU()(y + self._neural_net_weight[i] * y_net)
 
         if verbose: print('')
 
