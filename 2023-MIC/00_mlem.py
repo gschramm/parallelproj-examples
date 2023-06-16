@@ -26,7 +26,7 @@ cp.random.seed(seed)
 np.random.seed(seed)
 # image dimensions
 n = 128
-num_images = 5
+num_images = 20
 img_shape = (1, n, n)
 
 # voxel size of the image
@@ -117,11 +117,11 @@ for i in range(num_images):
     adjoint_ones_batch[i, ...] = projector_with_res_model.adjoint(
         mult_corr_batch[i, ...])
 
-# ### show all input data
+# ### show the first 5 data sets
 
 # +
-fig, ax = plt.subplots(4, num_images, figsize=(2.5 * num_images, 2.5 * 4))
-for i in range(num_images):
+fig, ax = plt.subplots(4, 5, figsize=(2.5 * 5, 2.5 * 4))
+for i in range(5):
     im0 = ax[0, i].imshow(tonumpy(img_batch[i, 0, ...], cp),
                           cmap='Greys',
                           vmin=0,
@@ -175,8 +175,8 @@ for it in range(num_iter):
 # ### show all MLEM reconstructions
 
 # +
-figm, axm = plt.subplots(2, num_images, figsize=(2.5 * num_images, 2.5 * 2))
-for i in range(num_images):
+figm, axm = plt.subplots(2, 5, figsize=(2.5 * 5, 2.5 * 2))
+for i in range(5):
     im0 = axm[0, i].imshow(tonumpy(img_batch[i, 0, ...], cp),
                            cmap='Greys',
                            vmin=0,
@@ -218,7 +218,12 @@ from torch_utils import PoissonEMModule
 em_module = PoissonEMModule(projector_with_res_model)
 
 # +
-# convert our cupy GPU arrays to torch GPU arrays
+x
+ 
+ 
+ 
+ 
+ # convert our cupy GPU arrays to torch GPU arrays
 # pytorch and cuda support zero copy data exchange
 # see https://docs.cupy.dev/en/stable/user_guide/interoperability.html#pytorch
 
@@ -244,7 +249,12 @@ for it in range(num_iter):
                                        adjoint_ones_batch_t)
 
 # +
-# convert the torch MLEM reconstruction array back to cupy for visualization
+x
+ 
+ 
+ 
+ 
+ # convert the torch MLEM reconstruction array back to cupy for visualization
 x_mlem_batch_torch = cp.ascontiguousarray(
     cp.from_dlpack(x_mlem_batch_t.detach()))
 
@@ -255,8 +265,8 @@ print(
 
 # +
 # visualize the torch reconstructions
-figm, axm = plt.subplots(4, num_images, figsize=(2.5 * num_images, 2.5 * 3))
-for i in range(num_images):
+figm, axm = plt.subplots(4, 5, figsize=(2.5 * 5, 2.5 * 3))
+for i in range(5):
     im0 = axm[0, i].imshow(tonumpy(img_batch[i, 0, ...], cp),
                            cmap='Greys',
                            vmin=0,
@@ -302,62 +312,87 @@ from torch_utils import simple_conv_net, UnrolledVarNet, Unet3D
 
 # setup a simple CNN that maps an image batch onto an image batch
 #conv_net = simple_conv_net(num_hidden_layers=7, num_features=7)
-conv_net = Unet3D()
+conv_net = Unet3D(num_features = 8, batch_norm = False, dropout_rate = 0.05)
 
 # setup the unrolled variational network consiting of block combining MLEM and conv-net updates
-var_net = UnrolledVarNet(em_module, num_blocks=10, neural_net=conv_net)
+var_net = UnrolledVarNet(em_module, num_blocks=2, neural_net=conv_net)
 
-num_epochs = 1500
+num_epochs = 2001
+batch_size = 5
+num_train = int(0.7 * num_images)
 learning_rate = 1e-3
-loss_fn = torch.nn.MSELoss()
+#loss_fn = torch.nn.MSELoss()
+loss_fn = torch.nn.L1Loss()
 optimizer = torch.optim.Adam(var_net.parameters(), lr=learning_rate)
 
 training_loss = np.zeros(num_epochs)
+validation_loss = []
 
 # feed a mini batch through the network
 for epoch in range(num_epochs):
-    x_varnet_batch_t = var_net.forward(x_mlem_batch_t,
-                                       data_batch_t,
-                                       mult_corr_batch_t,
-                                       add_corr_batch_t,
-                                       adjoint_ones_batch_t,
-                                       verbose=False)
+    i_batch = np.random.choice(np.arange(num_train), size = batch_size, replace = False)
+    y_train_t = var_net.forward(x_mlem_batch_t[i_batch, ...],
+                                data_batch_t[i_batch, ...],
+                                mult_corr_batch_t[i_batch, ...],
+                                add_corr_batch_t[i_batch, ...],
+                                adjoint_ones_batch_t[i_batch, ...],
+                                verbose=False)
 
-    loss = loss_fn(x_varnet_batch_t, img_batch_t)
+    loss = loss_fn(y_train_t, img_batch_t[i_batch, ...])
     training_loss[epoch] = loss.item()
-
-    if epoch % 10 == 0:
-        print(
-            f'epoch: {epoch:05} / {num_epochs:05} - training loss: {loss.item():.2E}',
-            end='\r')
 
     optimizer.zero_grad()
     loss.backward()
     optimizer.step()
-# -
 
-# plot the training loss
-figl, axl = plt.subplots()
-axl.plot(training_loss)
-axl.set_ylim(None, training_loss[20:].max())
+    # calculate the validation loss
+    if epoch % 50 == 0:
+        with torch.no_grad():
+            y_val_t = var_net.forward(x_mlem_batch_t[num_train:, ...],
+                                      data_batch_t[num_train:, ...],
+                                      mult_corr_batch_t[num_train:, ...],
+                                      add_corr_batch_t[num_train:, ...],
+                                      adjoint_ones_batch_t[num_train:, ...],
+                                      verbose=False)
+
+            validation_loss.append(
+                loss_fn(y_val_t, img_batch_t[num_train:, ...]).item())
+
+        print(
+            f'epoch: {epoch:05} / {num_epochs:05} - train loss: {loss.item():.2E} - val loss {validation_loss[-1]:.2E}',
+            end='\r')
+
+
+# +
+# plot the training and validation loss
+
+i_train = np.arange(1, num_epochs+1)
+i_val = np.arange(len(validation_loss))*50 + 1
+
+figl, axl = plt.subplots(1,1,figsize=(8,4))
+axl.plot(training_loss, '.-', label = 'training loss')
+axl.plot(i_val, validation_loss, '.-', label = 'validation loss')
+axl.set_ylim(None, training_loss[10:].max())
+axl.legend()
 axl.grid(ls=':')
 
 # +
-x_varnet_batch = cp.ascontiguousarray(cp.from_dlpack(
-    x_varnet_batch_t.detach()))
+y_val_batch = cp.ascontiguousarray(cp.from_dlpack(
+    y_val_t.detach()))
 
 # visualize the torch reconstructions
-figm, axm = plt.subplots(4, num_images, figsize=(2.5 * num_images, 2.5 * 3))
-for i in range(num_images):
-    im0 = axm[0, i].imshow(tonumpy(img_batch[i, 0, ...], cp),
+figm, axm = plt.subplots(4, 5, figsize=(2.5 * 5, 2.5 * 3))
+for i in range(5):
+    j = i + num_train
+    im0 = axm[0, i].imshow(tonumpy(img_batch[j, 0, ...], cp),
                            cmap='Greys',
                            vmin=0,
                            vmax=float(1.2 * img_batch.max()))
-    im1 = axm[1, i].imshow(tonumpy(x_mlem_batch[i, 0, ...], cp),
+    im1 = axm[1, i].imshow(tonumpy(x_mlem_batch[j, 0, ...], cp),
                            cmap='Greys',
                            vmin=0,
                            vmax=float(1.2 * img_batch.max()))
-    im2 = axm[2, i].imshow(tonumpy(x_varnet_batch[i, 0, ...], cp),
+    im2 = axm[2, i].imshow(tonumpy(y_val_batch[i, 0, ...], cp),
                            cmap='Greys',
                            vmin=0,
                            vmax=float(1.2 * img_batch.max()))
@@ -366,10 +401,10 @@ for i in range(num_images):
     cb1 = figm.colorbar(im1, fraction=0.03, location='bottom')
     cb2 = figm.colorbar(im2, fraction=0.03, location='bottom')
 
-    axm[0, i].set_title(f'ground truth image {i:03}', fontsize='medium')
-    axm[1, i].set_title(f'cupy MLEM {i:03} - {num_iter:03} it.',
+    axm[0, i].set_title(f'ground truth image {j:03}', fontsize='medium')
+    axm[1, i].set_title(f'cupy MLEM {j:03} - {num_iter:03} it.',
                         fontsize='medium')
-    axm[2, i].set_title(f'torch MLEM {i:03} - {num_iter:03} it.',
+    axm[2, i].set_title(f'varnet {j:03}',
                         fontsize='medium')
 
 for axx in axm.ravel():
