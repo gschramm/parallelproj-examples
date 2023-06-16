@@ -316,3 +316,122 @@ def simple_conv_net(num_hidden_layers=5,
     conv_net = torch.nn.Sequential(conv_net)
 
     return conv_net
+
+
+#----------------------------------------------------------------------
+#----------------------------------------------------------------------
+#----------------------------------------------------------------------
+
+
+class Unet3D(torch.nn.Module):
+
+    def __init__(self,
+                 device='cuda:0',
+                 num_features: int = 8,
+                 num_downsampling_layers: int = 3,
+                 kernel_size: tuple[int, int, int] = (1, 3, 3),
+                 batch_norm: bool = False,
+                 dropout_rate: float = 0.,
+                 dtype=torch.float32) -> None:
+
+        super().__init__()
+
+        self._device = device
+        self._num_features = num_features
+        self._kernel_size = kernel_size
+        self._dtype = dtype
+        self._num_downsampling_layers = num_downsampling_layers
+        self._batch_norm = batch_norm
+
+        self._pool = torch.nn.MaxPool3d((1, 2, 2))
+
+        self._encoder_blocks = torch.nn.ModuleList()
+        self._upsamples = torch.nn.ModuleList()
+        self._decoder_blocks = torch.nn.ModuleList()
+
+        self._dropout = torch.nn.Dropout(dropout_rate)
+
+        # first encoder block that takes input
+        self._encoder_blocks.append(
+            self._conv_block(1, num_features, num_features))
+
+        for i in range(self._num_downsampling_layers):
+            self._encoder_blocks.append(
+                self._conv_block((2**i) * num_features,
+                                 (2**(i + 1)) * num_features,
+                                 (2**(i + 1)) * num_features))
+
+        for i in range(self._num_downsampling_layers):
+            n = self._num_downsampling_layers - i
+            self._upsamples.append(
+                torch.nn.ConvTranspose3d((2**n) * num_features,
+                                         (2**(n - 1)) * num_features,
+                                         kernel_size=(1, 2, 2),
+                                         stride=2,
+                                         device=device))
+
+            self._decoder_blocks.append(
+                self._conv_block((2**n) * num_features,
+                                 (2**(n - 1)) * num_features,
+                                 (2**(n - 1)) * num_features))
+
+        self._final_conv = torch.nn.Conv3d(num_features,
+                                           1, (1, 1, 1),
+                                           padding='same',
+                                           device=self._device,
+                                           dtype=self._dtype)
+
+    def _conv_block(self,
+                    num_features_in,
+                    num_features_mid,
+                    num_features_out,
+                    activation=torch.nn.ReLU()):
+        conv_block = collections.OrderedDict()
+
+        conv_block['conv_1'] = torch.nn.Conv3d(num_features_in,
+                                               num_features_mid,
+                                               self._kernel_size,
+                                               padding='same',
+                                               device=self._device,
+                                               dtype=self._dtype)
+
+        conv_block['activation_1'] = activation
+
+        conv_block['conv_2'] = torch.nn.Conv3d(num_features_mid,
+                                               num_features_out,
+                                               self._kernel_size,
+                                               padding='same',
+                                               device=self._device,
+                                               dtype=self._dtype)
+
+        if self._batch_norm:
+            conv_block['batch_norm'] = torch.nn.BatchNorm3d(
+                num_features_out, device=self._device)
+
+        conv_block['activation_2'] = activation
+
+        conv_block = torch.nn.Sequential(conv_block)
+
+        return conv_block
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x_down = []
+        x_up = []
+
+        x_down.append(self._encoder_blocks[0](x))
+
+        for i in range(self._num_downsampling_layers):
+            x_down.append(self._encoder_blocks[i + 1](self._pool(x_down[i])))
+
+        x_up.append(self._dropout(x_down[-1]))
+
+        for i in range(self._num_downsampling_layers):
+            x_up.append(self._decoder_blocks[i](torch.cat([
+                x_down[self._num_downsampling_layers -
+                       (i + 1)], self._upsamples[i](x_up[-1])
+            ],
+                                                          dim=1)))
+
+        xout = self._final_conv(x_up[-1])
+
+        return xout
