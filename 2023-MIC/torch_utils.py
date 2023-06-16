@@ -344,6 +344,7 @@ class Unet3D(torch.nn.Module):
         self._batch_norm = batch_norm
 
         self._pool = torch.nn.MaxPool3d((1, 2, 2))
+        self._activation = torch.nn.LeakyReLU()
 
         self._encoder_blocks = torch.nn.ModuleList()
         self._upsamples = torch.nn.ModuleList()
@@ -381,11 +382,7 @@ class Unet3D(torch.nn.Module):
                                            device=self._device,
                                            dtype=self._dtype)
 
-    def _conv_block(self,
-                    num_features_in,
-                    num_features_mid,
-                    num_features_out,
-                    activation=torch.nn.ReLU()):
+    def _conv_block(self, num_features_in, num_features_mid, num_features_out):
         conv_block = collections.OrderedDict()
 
         conv_block['conv_1'] = torch.nn.Conv3d(num_features_in,
@@ -395,7 +392,7 @@ class Unet3D(torch.nn.Module):
                                                device=self._device,
                                                dtype=self._dtype)
 
-        conv_block['activation_1'] = activation
+        conv_block['activation_1'] = self._activation
 
         conv_block['conv_2'] = torch.nn.Conv3d(num_features_mid,
                                                num_features_out,
@@ -408,7 +405,7 @@ class Unet3D(torch.nn.Module):
             conv_block['batch_norm'] = torch.nn.BatchNorm3d(
                 num_features_out, device=self._device)
 
-        conv_block['activation_2'] = activation
+        conv_block['activation_2'] = self._activation
 
         conv_block = torch.nn.Sequential(conv_block)
 

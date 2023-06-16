@@ -26,7 +26,7 @@ cp.random.seed(seed)
 np.random.seed(seed)
 # image dimensions
 n = 128
-num_images = 20
+num_images = 30
 img_shape = (1, n, n)
 
 # voxel size of the image
@@ -75,7 +75,7 @@ for i in range(num_images):
 
 # generate a constant sensitivity sinogram
 sens_sino_batch = cp.full((num_images, ) + projector.out_shape,
-                          0.5,
+                          1.,
                           dtype=cp.float32)
 
 # generate sinograms of multiplicative corrections (attention times sensitivity)
@@ -218,12 +218,7 @@ from torch_utils import PoissonEMModule
 em_module = PoissonEMModule(projector_with_res_model)
 
 # +
-x
- 
- 
- 
- 
- # convert our cupy GPU arrays to torch GPU arrays
+# convert our cupy GPU arrays to torch GPU arrays
 # pytorch and cuda support zero copy data exchange
 # see https://docs.cupy.dev/en/stable/user_guide/interoperability.html#pytorch
 
@@ -249,12 +244,7 @@ for it in range(num_iter):
                                        adjoint_ones_batch_t)
 
 # +
-x
- 
- 
- 
- 
- # convert the torch MLEM reconstruction array back to cupy for visualization
+# convert the torch MLEM reconstruction array back to cupy for visualization
 x_mlem_batch_torch = cp.ascontiguousarray(
     cp.from_dlpack(x_mlem_batch_t.detach()))
 
@@ -265,7 +255,7 @@ print(
 
 # +
 # visualize the torch reconstructions
-figm, axm = plt.subplots(4, 5, figsize=(2.5 * 5, 2.5 * 3))
+figm, axm = plt.subplots(3, 5, figsize=(2.5 * 5, 2.5 * 3))
 for i in range(5):
     im0 = axm[0, i].imshow(tonumpy(img_batch[i, 0, ...], cp),
                            cmap='Greys',
@@ -312,17 +302,16 @@ from torch_utils import simple_conv_net, UnrolledVarNet, Unet3D
 
 # setup a simple CNN that maps an image batch onto an image batch
 #conv_net = simple_conv_net(num_hidden_layers=7, num_features=7)
-conv_net = Unet3D(num_features = 8, batch_norm = False, dropout_rate = 0.05)
+conv_net = Unet3D(num_features = 8, num_downsampling_layers = 3, batch_norm = False, dropout_rate = 0.05)
 
 # setup the unrolled variational network consiting of block combining MLEM and conv-net updates
-var_net = UnrolledVarNet(em_module, num_blocks=2, neural_net=conv_net)
+var_net = UnrolledVarNet(em_module, num_blocks=5, neural_net=conv_net)
 
-num_epochs = 2001
-batch_size = 5
+num_epochs = 801
+batch_size = 4
 num_train = int(0.7 * num_images)
 learning_rate = 1e-3
-#loss_fn = torch.nn.MSELoss()
-loss_fn = torch.nn.L1Loss()
+loss_fn = torch.nn.MSELoss()
 optimizer = torch.optim.Adam(var_net.parameters(), lr=learning_rate)
 
 training_loss = np.zeros(num_epochs)
@@ -361,6 +350,8 @@ for epoch in range(num_epochs):
         print(
             f'epoch: {epoch:05} / {num_epochs:05} - train loss: {loss.item():.2E} - val loss {validation_loss[-1]:.2E}',
             end='\r')
+        
+print(f'\n{var_net._neural_net_weight}')
 
 
 # +
@@ -381,7 +372,7 @@ y_val_batch = cp.ascontiguousarray(cp.from_dlpack(
     y_val_t.detach()))
 
 # visualize the torch reconstructions
-figm, axm = plt.subplots(4, 5, figsize=(2.5 * 5, 2.5 * 3))
+figm, axm = plt.subplots(4, 5, figsize=(2.5 * 5, 2.5 * 4))
 for i in range(5):
     j = i + num_train
     im0 = axm[0, i].imshow(tonumpy(img_batch[j, 0, ...], cp),
@@ -392,7 +383,11 @@ for i in range(5):
                            cmap='Greys',
                            vmin=0,
                            vmax=float(1.2 * img_batch.max()))
-    im2 = axm[2, i].imshow(tonumpy(y_val_batch[i, 0, ...], cp),
+    im2 = axm[2, i].imshow(tonumpy(ndi.gaussian_filter(x_mlem_batch[j, 0, ...],1.3), cp),
+                           cmap='Greys',
+                           vmin=0,
+                           vmax=float(1.2 * img_batch.max()))
+    im3 = axm[3, i].imshow(tonumpy(y_val_batch[i, 0, ...], cp),
                            cmap='Greys',
                            vmin=0,
                            vmax=float(1.2 * img_batch.max()))
@@ -400,11 +395,14 @@ for i in range(5):
     cb0 = figm.colorbar(im0, fraction=0.03, location='bottom')
     cb1 = figm.colorbar(im1, fraction=0.03, location='bottom')
     cb2 = figm.colorbar(im2, fraction=0.03, location='bottom')
+    cb3 = figm.colorbar(im3, fraction=0.03, location='bottom')
 
     axm[0, i].set_title(f'ground truth image {j:03}', fontsize='medium')
-    axm[1, i].set_title(f'cupy MLEM {j:03} - {num_iter:03} it.',
+    axm[1, i].set_title(f'MLEM {j:03} - {num_iter:03} it.',
                         fontsize='medium')
-    axm[2, i].set_title(f'varnet {j:03}',
+    axm[2, i].set_title(f'p.s. MLEM {j:03}',
+                        fontsize='medium')
+    axm[3, i].set_title(f'varnet {j:03}',
                         fontsize='medium')
 
 for axx in axm.ravel():
