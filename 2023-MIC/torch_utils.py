@@ -25,14 +25,17 @@ class LinearOperatorForwardLayer(torch.autograd.Function):
         ctx.operator = operator
 
         num_batch = x.shape[0]
+        num_ch = x.shape[1]
 
         # convert pytorch input tensor into cupy array
         cp_x = cp.ascontiguousarray(cp.from_dlpack(x.detach()))
-        cp_y = cp.zeros((num_batch, ) + operator.out_shape, dtype=cp.float32)
+        cp_y = cp.zeros((num_batch, num_ch) + operator.out_shape,
+                        dtype=cp.float32)
 
-        # apply operator across mini batch
-        for i in range(cp_x.shape[0]):
-            cp_y[i, ...] = operator(cp_x[i, ...])
+        # apply operator across mini batch and channels
+        for ib in range(num_batch):
+            for ich in range(num_ch):
+                cp_y[ib, ich, ...] = operator(cp_x[ib, ich, ...])
 
         return torch.from_dlpack(cp_y)
 
@@ -53,16 +56,19 @@ class LinearOperatorForwardLayer(torch.autograd.Function):
             operator = ctx.operator
 
             num_batch = grad_output.shape[0]
+            num_ch = grad_output.shape[1]
 
             # convert torch array to cupy array
             cp_grad_output = cp.from_dlpack(grad_output.detach())
 
-            cp_x = cp.zeros((num_batch, ) + operator.in_shape,
+            cp_x = cp.zeros((num_batch, num_ch) + operator.in_shape,
                             dtype=cp.float32)
 
             # apply adjoint operator across mini batch
-            for i in range(cp_x.shape[0]):
-                cp_x[i, ...] = operator.adjoint(cp_grad_output[i, ...])
+            for ib in range(num_batch):
+                for ich in range(num_ch):
+                    cp_x[ib, ich,
+                         ...] = operator.adjoint(cp_grad_output[ib, ich, ...])
 
             # since forward takes two input arguments (x, operator)
             # we have to return two arguments (the latter is None)
@@ -89,15 +95,17 @@ class LinearOperatorAdjointLayer(torch.autograd.Function):
         ctx.operator = operator
 
         num_batch = x.shape[0]
+        num_ch = x.shape[1]
 
         # convert pytorch input tensor into cupy array
         cp_x = cp.ascontiguousarray(cp.from_dlpack(x.detach()))
-
-        cp_y = cp.zeros((num_batch, ) + operator.in_shape, dtype=cp.float32)
+        cp_y = cp.zeros((num_batch, num_ch) + operator.in_shape,
+                        dtype=cp.float32)
 
         # apply operator across mini batch
-        for i in range(cp_x.shape[0]):
-            cp_y[i, ...] = operator.adjoint(cp_x[i, ...])
+        for ib in range(num_batch):
+            for ich in range(num_ch):
+                cp_y[ib, ich, ...] = operator.adjoint(cp_x[ib, ich, ...])
 
         return torch.from_dlpack(cp_y)
 
@@ -118,16 +126,18 @@ class LinearOperatorAdjointLayer(torch.autograd.Function):
             operator = ctx.operator
 
             num_batch = grad_output.shape[0]
+            num_ch = grad_output.shape[1]
 
             # convert torch array to cupy array
             cp_grad_output = cp.from_dlpack(grad_output.detach())
 
-            cp_x = cp.zeros((num_batch, ) + operator.out_shape,
+            cp_x = cp.zeros((num_batch, num_ch) + operator.out_shape,
                             dtype=cp.float32)
 
             # apply adjoint operator across mini batch
-            for i in range(cp_x.shape[0]):
-                cp_x[i, ...] = operator(cp_grad_output[i, ...])
+            for ib in range(num_batch):
+                for ich in range(num_ch):
+                    cp_x[ib, ich, ...] = operator(cp_grad_output[ib, ich, ...])
 
             # since forward takes two input arguments (x, operator)
             # we have to return two arguments (the latter is None)
@@ -151,15 +161,15 @@ class PoissonEMModule(torch.nn.Module):
         Parameters
         ----------
         x : torch.Tensor
-            minibatch of 3D images with dimension (batch_size, n0, n1, n2)
+            minibatch of 3D images with dimension (batch_size, 1, n0, n1, n2)
         data : torch.Tensor
-            emission data (batch_size, data_size)
+            emission data (batch_size, 1, data_size)
         multiplicative_correction : torch.Tensor
-            multiplicative corrections in forward model (batch_size, data_size)
+            multiplicative corrections in forward model (batch_size, 1, data_size)
         additive_correction : torch.Tensor
-            additive corrections in forward model (batch_size, data_size)
+            additive corrections in forward model (batch_size, 1, data_size)
         adjoint_ones : torch.Tensor
-            adjoint applied to "ones" (sensitivity images) of size (batch_size, n0, n1, n2)
+            adjoint applied to "ones" (sensitivity images) of size (batch_size, 1, n0, n1, n2)
 
         Returns
         -------
@@ -252,7 +262,7 @@ class UnrolledVarNet(torch.nn.Module):
             # pytorch convnets expect input tensors of shape (batch_size, num_channels, spatial_shape)
             # here we just add a dummy channel dimension
             if self._neural_net is not None:
-                y_net = self._neural_net(y.unsqueeze(1))[:, 0, ...]
+                y_net = self._neural_net(y)
                 y = torch.nn.ReLU()(y + self._neural_net_weight[i] * y_net)
 
         if verbose: print('')

@@ -222,15 +222,17 @@ em_module = PoissonEMModule(projector_with_res_model)
 # convert our cupy GPU arrays to torch GPU arrays
 # pytorch and cuda support zero copy data exchange
 # see https://docs.cupy.dev/en/stable/user_guide/interoperability.html#pytorch
+# (mini batch) data in torch should have the shape (batch, channel, spatial/data shape)
+# which is why we add extra dummy channel dimension via unsqueeze(1)
 
-img_batch_t = torch.from_dlpack(img_batch)
-data_batch_t = torch.from_dlpack(data_batch)
-mult_corr_batch_t = torch.from_dlpack(mult_corr_batch)
-add_corr_batch_t = torch.from_dlpack(add_corr_batch)
-adjoint_ones_batch_t = torch.from_dlpack(adjoint_ones_batch)
+img_batch_t = torch.from_dlpack(img_batch).unsqueeze(1)
+data_batch_t = torch.from_dlpack(data_batch).unsqueeze(1)
+mult_corr_batch_t = torch.from_dlpack(mult_corr_batch).unsqueeze(1)
+add_corr_batch_t = torch.from_dlpack(add_corr_batch).unsqueeze(1)
+adjoint_ones_batch_t = torch.from_dlpack(adjoint_ones_batch).unsqueeze(1)
 
 # initialize a batch array for the reconstructions
-x0_mlem_batch_t = torch.ones(img_batch.shape,
+x0_mlem_batch_t = torch.ones(img_batch_t.shape,
                              dtype=torch.float32,
                              device=data_batch_t.device)
 x_mlem_batch_t = torch.clone(x0_mlem_batch_t)
@@ -247,7 +249,7 @@ for it in range(num_iter):
 # +
 # convert the torch MLEM reconstruction array back to cupy for visualization
 x_mlem_batch_torch = cp.ascontiguousarray(
-    cp.from_dlpack(x_mlem_batch_t.detach()))
+    cp.from_dlpack(x_mlem_batch_t.detach())).squeeze(1)
 
 # calculate the max difference between the cupy and torch MLEM implementation
 print(
@@ -299,17 +301,16 @@ figm.tight_layout()
 # ## Part 3: Supervised training of a unrolled variational network
 
 # +
-from torch_utils import simple_conv_net, UnrolledVarNet, Unet3D
+from torch_utils import UnrolledVarNet, Unet3D
 
 # setup a simple CNN that maps an image batch onto an image batch
-#conv_net = simple_conv_net(num_hidden_layers=7, num_features=7)
 conv_net = Unet3D(num_features=16, num_downsampling_layers=3, batch_norm=True)
 
 # setup the unrolled variational network consiting of block combining MLEM and conv-net updates
 var_net = UnrolledVarNet(em_module, num_blocks=5, neural_net=conv_net)
 var_net.eval()
 
-num_epochs = 801
+num_epochs = 51
 batch_size = 8
 num_train = int(0.7 * num_images)
 learning_rate = 1e-3
@@ -397,9 +398,9 @@ with torch.no_grad():
                               adjoint_ones_batch_t[i_val, ...],
                               verbose=False)
 
-y_train_batch = cp.ascontiguousarray(cp.from_dlpack(y_train_t.detach()))
-
-y_val_batch = cp.ascontiguousarray(cp.from_dlpack(y_val_t.detach()))
+y_train_batch = cp.ascontiguousarray(cp.from_dlpack(
+    y_train_t.detach())).squeeze(1)
+y_val_batch = cp.ascontiguousarray(cp.from_dlpack(y_val_t.detach())).squeeze(1)
 
 # visualize the torch reconstructions
 figm, axm = plt.subplots(4, 5, figsize=(2.5 * 5, 2.5 * 4))
