@@ -26,7 +26,7 @@ cp.random.seed(seed)
 np.random.seed(seed)
 # image dimensions
 n = 128
-num_images = 30
+num_images = 75
 img_shape = (1, n, n)
 
 # voxel size of the image
@@ -78,6 +78,11 @@ for i in range(num_images):
 sens_sino_dataset = cp.full((num_images, ) + projector.out_shape,
                             1.,
                             dtype=cp.float32)
+
+# multiply each sensitivty sinogram with a random factor between 0.5 and 2.0
+# to simulate differences in injected dose and acq. time
+for i in range(num_images):
+    sens_sino_dataset[i, ...] *= float(cp.random.uniform(0.75, 1.25))
 
 # generate sinograms of multiplicative corrections (attention times sensitivity)
 mult_corr_dataset = att_sino_dataset * sens_sino_dataset
@@ -167,13 +172,14 @@ x0_mlem_dataset = cp.ones(img_dataset.shape, dtype=cp.float32)
 x_mlem_dataset = x0_mlem_dataset.copy()
 
 for it in range(num_iter):
-    print(f'cupy MLEM it {(it+1):04} / {num_iter:04}', end='\r')
+    print(f'cupy  MLEM it {(it+1):04} / {num_iter:04}', end='\r')
     for ib in range(num_images):
         exp = mult_corr_dataset[ib, ...] * projector_with_res_model(
             x_mlem_dataset[ib, ...]) + add_corr_dataset[ib, ...]
         x_mlem_dataset[ib, ...] *= (projector_with_res_model.adjoint(
             mult_corr_dataset[ib, ...] * data_dataset[ib, ...] / exp) /
                                     adjoint_ones_dataset[ib, ...])
+print('')
 # -
 
 # ### show all MLEM reconstructions
@@ -244,12 +250,12 @@ x_mlem_dataset_t = torch.clone(x0_mlem_dataset_t)
 
 # run MLEM using a custom defined EM_Module
 for it in range(num_iter):
-    print(f'torch it {(it+1):04} / {num_iter:04}', end='\r')
+    print(f'torch MLEM it {(it+1):04} / {num_iter:04}', end='\r')
     x_mlem_dataset_t = em_module.forward(x_mlem_dataset_t, data_dataset_t,
                                          mult_corr_dataset_t,
                                          add_corr_dataset_t,
                                          adjoint_ones_dataset_t)
-
+print('')
 # +
 # convert the torch MLEM reconstruction array back to cupy for visualization
 x_mlem_dataset_torch = cp.ascontiguousarray(
@@ -306,26 +312,37 @@ figm.tight_layout()
 
 # +
 from torch_utils import UnrolledVarNet, Unet3D
+import torchmetrics
 
 # setup a simple CNN that maps an image batch onto an image batch
-conv_net = Unet3D(num_features=16, num_downsampling_layers=3, batch_norm=True)
+conv_net = Unet3D(num_features=16, num_downsampling_layers=3)
 
 # setup the unrolled variational network consiting of block combining MLEM and conv-net updates
-var_net = UnrolledVarNet(em_module, num_blocks=5, neural_net=conv_net)
+var_net = UnrolledVarNet(em_module, num_blocks=3, neural_net=conv_net)
 var_net.eval()
 
-num_epochs = 501
-batch_size = 8
-num_train = int(0.7 * num_images)
+num_updates = 1001
+batch_size = 15
+num_train = int(0.8 * num_images)
 learning_rate = 1e-3
-loss_fn = torch.nn.MSELoss()
+data_range = float(img_dataset_t.max())
+ssim_fn = torchmetrics.StructuralSimilarityIndexMeasure(
+    data_range=data_range).to(x_mlem_dataset_t.device)
+psnr_fn = torchmetrics.PeakSignalNoiseRatio(data_range=data_range).to(
+    x_mlem_dataset_t.device)
+
+#loss_fn = torch.nn.MSELoss()
+loss_fn = torch.nn.L1Loss()
+
 optimizer = torch.optim.Adam(var_net.parameters(), lr=learning_rate)
 
-training_loss = np.zeros(num_epochs)
+training_loss = np.zeros(num_updates)
 validation_loss = []
+validation_ssim = []
+validation_psnr = []
 
 # feed a mini batch through the network
-for epoch in range(num_epochs):
+for update in range(num_updates):
     var_net.train()
     # select a random mini batch from the traning data sets
     i_batch = np.random.choice(np.arange(num_train),
@@ -339,14 +356,14 @@ for epoch in range(num_epochs):
                                 verbose=False)
 
     loss = loss_fn(y_train_t, img_dataset_t[i_batch, ...])
-    training_loss[epoch] = loss.item()
+    training_loss[update] = loss.item()
 
     optimizer.zero_grad()
     loss.backward()
     optimizer.step()
 
     # calculate the validation loss
-    if epoch % 10 == 0:
+    if update % 10 == 0:
         var_net.eval()
         with torch.no_grad():
             y_val_t = var_net.forward(x_mlem_dataset_t[num_train:, ...],
@@ -358,27 +375,46 @@ for epoch in range(num_epochs):
 
         validation_loss.append(
             loss_fn(y_val_t, img_dataset_t[num_train:, ...]).item())
+        validation_ssim.append(
+            ssim_fn(y_val_t.squeeze(2), img_dataset_t[num_train:,
+                                                      ...].squeeze(2)).item())
+        validation_psnr.append(
+            psnr_fn(y_val_t.squeeze(2), img_dataset_t[num_train:,
+                                                      ...].squeeze(2)).item())
 
         print(
-            f'epoch: {epoch:05} / {num_epochs:05} - train loss: {loss.item():.2E} - val loss {validation_loss[-1]:.2E}',
+            f'update: {update:05} / {num_updates:05} - train loss: {loss.item():.2E} - val loss {validation_loss[-1]:.2E} - val ssim {validation_ssim[-1]:.2E} - val psnr {validation_psnr[-1]:.2E}',
             end='\r')
 
 print(f'\nconv net weights {var_net._neural_net_weight}')
 
 print(f'min training   loss {training_loss.min():.2E}')
 print(f'min validation loss {min(validation_loss):.2E}')
+print(f'max validation ssim {max(validation_ssim):.2E}')
+print(f'max validation psnr {max(validation_psnr):.2E}')
 
 # +
 # plot the training and validation loss
-i_train = np.arange(1, num_epochs + 1)
+i_train = np.arange(1, num_updates + 1)
 i_val = np.arange(len(validation_loss)) * 10 + 1
 
-figl, axl = plt.subplots(1, 1, figsize=(8, 4))
-axl.plot(training_loss, '.-', label='training loss')
-axl.plot(i_val, validation_loss, '.-', label='validation loss')
-axl.set_ylim(0, training_loss[10:].max())
-axl.legend()
-axl.grid(ls=':')
+figl, axl = plt.subplots(1, 3, figsize=(10, 4), sharex=True)
+axl[0].plot(training_loss, '.-', label='training loss')
+axl[0].plot(i_val, validation_loss, '.-', label='validation loss')
+axl[0].set_ylim(0, training_loss[10:].max())
+axl[0].legend()
+axl[0].grid(ls=':')
+axl[0].set_title('losses')
+axl[1].plot(i_val, validation_ssim, '.-')
+axl[1].grid(ls=':')
+axl[1].set_title('validation ssim')
+axl[2].plot(i_val, validation_psnr, '.-')
+axl[2].grid(ls=':')
+axl[2].set_title('validation PSNR')
+axl[0].set_xlabel('update')
+axl[1].set_xlabel('update')
+axl[2].set_xlabel('update')
+figl.tight_layout()
 
 # +
 # inference and plots of results
@@ -478,3 +514,5 @@ for axx in axv.ravel():
     axx.axis('off')
 figv.suptitle('First 5 validation data sets', fontsize=20)
 figv.tight_layout()
+
+plt.show()

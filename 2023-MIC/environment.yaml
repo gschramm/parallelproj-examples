@@ -12,4 +12,5 @@ dependencies:
   - jupyter_nbextensions_configurator
   - jupytext
   - pytorch >= 2.0
+  - torchmetrics
   - cupy
