@@ -13,7 +13,8 @@ from parallelproj.utils import tonumpy
 
 import matplotlib.pyplot as plt
 
-from utils import generate_random_image, ParallelViewProjector3D
+from utils import ParallelViewProjector3D
+from shapes import generate_random_3d_image
 # -
 
 # ### setup a batch of "random" ground truth images
@@ -41,9 +42,7 @@ img_origin = ((-cp.array(img_shape) / 2 + 0.5) * voxel_size).astype(cp.float32)
 img_dataset = cp.zeros((num_images, ) + img_shape, dtype=cp.float32)
 
 for i in range(num_images):
-    random_img = generate_random_image(n_trans, cp, ndi)
-    for j in range(n_ax):
-        img_dataset[i, ..., j] = random_img
+    img_dataset[i, ...] = generate_random_3d_image(n_trans, n_ax, cp, ndi)
 # -
 
 # ### setup a simple "3D" parallel view non-tof projector

@@ -4,8 +4,11 @@
 """
 import numpy as np
 from scipy.special import binom
+import scipy.spatial
 import scipy.ndimage as ndi
 import matplotlib.pyplot as plt
+
+from types import ModuleType
 
 bernstein = lambda n, k, t: binom(n, k) * t**k * (1. - t)**(n - k)
 
@@ -124,22 +127,68 @@ def random_2d_shape_image(n,
         ndi.gaussian_filter(img, 0.5) > 0).astype(dtype)
 
 
-#--------------------------------------------------------------------------------
-#--------------------------------------------------------------------------------
+def flood_fill_hull(image):
+    """ generate the convex hull of a 3D binary image"""
+    points = np.transpose(np.where(image))
+    hull = scipy.spatial.ConvexHull(points)
+    deln = scipy.spatial.Delaunay(points[hull.vertices])
+    idx = np.stack(np.indices(image.shape), axis=-1)
+    out_idx = np.nonzero(deln.find_simplex(idx) + 1)
+    out_img = np.zeros(image.shape)
+    out_img[out_idx] = 1
+    return out_img
 
-if __name__ == '__main__':
-    num_images = 36
-    n = 128
-    np.random.seed(1)
 
-    fig, ax = plt.subplots(6, 6, figsize=(9, 9))
+def generate_random_3d_image(n_trans: int, n_ax: int, xp: ModuleType,
+                             ndi: ModuleType):
+    """generate a random 3D test image with internal structure
 
-    for i in range(num_images):
-        shape = random_2d_shape_image(n)
-        ax.ravel()[i].imshow(shape, cmap=plt.cm.gray)
+    Parameters
+    ----------
+    n_trans, n_ax: int
+        number of voxels in trans-axial and axial direction
+    xp : ModuleType
+        numpy or cupy module
+    ndi : ModuleType
+        scipy.ndimage or cupyx.scipy.ndimage module
 
-    for axx in ax.ravel():
-        axx.set_axis_off()
+    Returns
+    -------
+    numpy or cupy array
+    """
 
-    fig.tight_layout()
-    fig.show()
+    n_t = 4
+
+    tmp = np.zeros((n_t, n_trans, n_trans, n_ax), dtype=np.float32)
+    tmp2 = np.zeros((n_t, n_trans, n_trans, n_ax), dtype=np.float32)
+
+    for i in range(n_t):
+        tmp[i, :, :, 0] = random_2d_shape_image(n_trans)
+        tmp[i, :, :, -1] = random_2d_shape_image(n_trans)
+
+    for i in range(n_t):
+        tmp2[i, ...] = flood_fill_hull(tmp[i, ...])
+
+    bg_img = (tmp2.sum(0) > 0)
+
+    if xp.__name__ == 'cupy':
+        bg_img = xp.array(bg_img)
+
+    tmp = bg_img.copy().astype(xp.float32)
+    tmp *= xp.random.rand(*bg_img.shape).astype(xp.float32)
+    tmp = (ndi.gaussian_filter(tmp, 3) > 0.51)
+
+    label_img, num_labels = ndi.label(tmp)
+
+    img = xp.zeros(bg_img.shape).astype(xp.float32)
+    for i in range(1, num_labels + 1):
+        inds = xp.where(label_img == i)
+        img[inds] = 4 * xp.random.rand() - 1
+
+    scale = float(0.4 * xp.random.rand() + 0.8)
+    exp = float(0.2 * xp.random.rand() + 0.9)
+
+    complete_img = bg_img + img
+    complete_img = (scale * complete_img)**exp
+
+    return complete_img
