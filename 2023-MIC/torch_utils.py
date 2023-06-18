@@ -335,7 +335,7 @@ class Unet3D(torch.nn.Module):
                  device='cuda:0',
                  num_features: int = 8,
                  num_downsampling_layers: int = 3,
-                 kernel_size: tuple[int, int, int] = (1, 3, 3),
+                 kernel_size: tuple[int, int, int] = (3, 3, 3),
                  batch_norm: bool = False,
                  dropout_rate: float = 0.,
                  dtype=torch.float32) -> None:
@@ -349,7 +349,7 @@ class Unet3D(torch.nn.Module):
         self._num_downsampling_layers = num_downsampling_layers
         self._batch_norm = batch_norm
 
-        self._pool = torch.nn.MaxPool3d((1, 2, 2))
+        self._pool = torch.nn.MaxPool3d((2, 2, 2))
         self._activation = torch.nn.LeakyReLU()
 
         self._encoder_blocks = torch.nn.ModuleList()
@@ -373,7 +373,7 @@ class Unet3D(torch.nn.Module):
             self._upsamples.append(
                 torch.nn.ConvTranspose3d((2**n) * num_features,
                                          (2**(n - 1)) * num_features,
-                                         kernel_size=(1, 2, 2),
+                                         kernel_size=(2, 2, 2),
                                          stride=2,
                                          device=device))
 
@@ -429,11 +429,15 @@ class Unet3D(torch.nn.Module):
         x_up.append(self._dropout(x_down[-1]))
 
         for i in range(self._num_downsampling_layers):
-            x_up.append(self._decoder_blocks[i](torch.cat([
-                x_down[self._num_downsampling_layers -
-                       (i + 1)], self._upsamples[i](x_up[-1])
-            ],
-                                                          dim=1)))
+            try:
+                x_up.append(self._decoder_blocks[i](torch.cat([
+                    x_down[self._num_downsampling_layers -
+                           (i + 1)], self._upsamples[i](x_up[-1])
+                ],
+                                                              dim=1)))
+            except:
+                import pdb
+                pdb.set_trace()
 
         xout = self._final_conv(x_up[-1])
 
