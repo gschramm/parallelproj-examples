@@ -293,8 +293,10 @@ num_iter_mlem = 100
 x0_mlem_dataset = cp.ones(img_dataset.shape, dtype=cp.float32)
 x_mlem_dataset = x0_mlem_dataset.copy()
 
+# MLEM iteration loop
 for it in range(num_iter_mlem):
     print(f'cupy  MLEM it {(it+1):04} / {num_iter_mlem:04}', end='\r')
+    # loop over all data sets to be reconstructed
     for ib in range(num_images):
         exp = mult_corr_dataset[ib, ...] * projector_with_res_model(
             x_mlem_dataset[ib, ...]) + add_corr_dataset[ib, ...]
@@ -338,6 +340,13 @@ for axx in axm.ravel():
 figm.tight_layout()
 # -
 
+# ### 1.12 Summary of Part 1
+#
+# So far we have:
+# - setup a "simple" forward model $A$
+# - generated a data based of random images, and corresponding emission and correction sinograms
+# - used MLEM to reconstruct all data sets
+
 # ---
 # ---
 # ---
@@ -348,15 +357,32 @@ figm.tight_layout()
 # ---
 # ---
 
-# ## Part 2: MLEM using an unrolled torch network
+# ## Part 2: MLEM using an unrolled pytorch network
+#
+# In this part, we will implement the series of MLEM updates as an unrolled pytorch network. 
+# In other words, we will setup and use a custom pytorch module that calculates a single MLEM update on a batch of data sets. Repetitive use (stacking) of those modules allows us to re-produce the MLEM reconstructions obtained of part 1. 
+#
+# This is an important pre-cursor for setting up an unrolled variational network including trainable parameters which we will do in Part 3. 
 
 # +
-# define a torch module that performs an MLEM update - possible with zero copy
+# import pytorch
 import torch
 # import a custom torch module that computes an MLEM update
 from torch_utils import PoissonEMModule
 
+# setup the custom torch PoissonEMModule that takes the operator (PG) as input
 em_module = PoissonEMModule(projector_with_res_model)
+# -
+
+# ### 2.1 convert cupy GPU arrays to pytorch GPU tensors
+#
+# To use pytorch, we have to convert our cupy GPU arrays to pytorch GPU tensors. Fortunately, this is possible with zero copy data exchage - see [here](https://docs.cupy.dev/en/stable/user_guide/interoperability.html#pytorch) for details. 
+#
+# **Note:**
+#
+# - in this notebook, we use the suffix *_t* for pytorch GPU tensors
+# - pytorch neural network modules operator on batches of data with shape *(batch size, number of channels, spatial size)*
+# - since we deal with single channel images, we simply add a dummy channel axis of length 1
 
 # +
 # convert our cupy GPU arrays to torch GPU arrays
@@ -379,6 +405,11 @@ x_mlem_dataset_t = torch.clone(x0_mlem_dataset_t)
 
 # -
 
+# ### Part 2.2 pytorch module-based MLEM
+#
+# We execute MLEM reconstructions of all data sets, by passing our data repetitively through our custom PoissonEMModules.
+# Note that the module acts on a batch of data sets.
+
 # run MLEM using a custom defined EM_Module
 for it in range(num_iter_mlem):
     print(f'torch MLEM it {(it+1):04} / {num_iter_mlem:04}', end='\r')
@@ -387,15 +418,22 @@ for it in range(num_iter_mlem):
                                          add_corr_dataset_t,
                                          adjoint_ones_dataset_t)
 print('')
+# ### Part 2.3 compare cupy and pytorch MLEM results 
+#
+# If our implementation of the pytorch module based MLEM reconstruction is correct, the difference to the results obtained in Part 1 should be "small" (in the order of 1e-5). Note that the difference is not exactly zero due to parallel addition of floating point numbers with limited precision.
+
 # +
-# convert the torch MLEM reconstruction array back to cupy for visualization
+# convert the torch MLEM reconstruction array back to cupy for comparison and visualization
 x_mlem_dataset_torch = cp.ascontiguousarray(
     cp.from_dlpack(x_mlem_dataset_t.detach())).squeeze(1)
 
 # calculate the max difference between the cupy and torch MLEM implementation
 print(
-    f'max cupy - torch MLEM diff: {cp.abs(x_mlem_dataset - x_mlem_dataset_torch).max()}'
+    f'max cupy MLEM - torch MLEM difference: {cp.abs(x_mlem_dataset - x_mlem_dataset_torch).max()}'
 )
+# -
+
+# ### Part 2.4 visualize the pytorch and cupy MLEM reconstructions
 
 # +
 # visualize the torch reconstructions
