@@ -429,15 +429,11 @@ class Unet3D(torch.nn.Module):
         x_up.append(self._dropout(x_down[-1]))
 
         for i in range(self._num_downsampling_layers):
-            try:
-                x_up.append(self._decoder_blocks[i](torch.cat([
-                    x_down[self._num_downsampling_layers -
-                           (i + 1)], self._upsamples[i](x_up[-1])
-                ],
-                                                              dim=1)))
-            except:
-                import pdb
-                pdb.set_trace()
+            x_up.append(self._decoder_blocks[i](torch.cat([
+                x_down[self._num_downsampling_layers -
+                       (i + 1)], self._upsamples[i](x_up[-1])
+            ],
+                                                          dim=1)))
 
         xout = self._final_conv(x_up[-1])
 

@@ -349,9 +349,9 @@ import torchmetrics
 conv_net = Unet3D(num_features=16, num_downsampling_layers=3)
 
 # setup the unrolled variational network consiting of block combining MLEM and conv-net updates
-var_net = UnrolledVarNet(em_module, num_blocks=3, neural_net=conv_net)
+var_net = UnrolledVarNet(em_module, num_blocks=5, neural_net=conv_net)
 
-num_updates = 801
+num_updates = 1001
 batch_size = 5
 num_train = int(0.8 * num_images)
 learning_rate = 1e-3
