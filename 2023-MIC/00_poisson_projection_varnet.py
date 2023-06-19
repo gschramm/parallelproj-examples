@@ -488,15 +488,33 @@ figm.tight_layout()
 
 # ## Part 3: Supervised training of an unrolled variational network
 
+# ### 3.1 Setup of simple convolutional neural network (3D Unet)
+
 # +
-from torch_utils import UnrolledVarNet, Unet3D
-import torchmetrics
+from torch_utils import Unet3D
+
+num_features = 16
+num_downsampling_layers=3
 
 # setup a simple CNN that maps an image batch onto an image batch
-conv_net = Unet3D(num_features=16, num_downsampling_layers=3)
+conv_net = Unet3D(num_features=num_features, num_downsampling_layers=num_downsampling_layers)
+# -
+
+# ### 3.2 Setup of the unrolled variational network
+
+# +
+from torch_utils import UnrolledVarNet
+
+num_blocks = 5
 
 # setup the unrolled variational network consiting of block combining MLEM and conv-net updates
-var_net = UnrolledVarNet(em_module, num_blocks=5, neural_net=conv_net)
+var_net = UnrolledVarNet(em_module, num_blocks=num_blocks, neural_net=conv_net)
+
+
+# +
+import torchmetrics
+
+
 
 num_updates = 1001
 batch_size = 5
