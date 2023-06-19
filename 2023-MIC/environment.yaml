@@ -11,6 +11,8 @@ dependencies:
   - jupyter
   - jupyter_nbextensions_configurator
   - jupytext
+  - ipydrawio
+  - ipydrawio-export
   - pytorch >= 2.0
   - torchmetrics
   - cupy
