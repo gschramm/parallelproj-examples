@@ -1,8 +1,15 @@
 # # Unrolled MLEM and variational networks for Poisson projection data
 
 # ## Part 1: MLEM using cupy GPU arrays
+#
+# In this part, we will:
+# - simulate a data base of random 3D objects
+# - setup a projector for a "small" generic 3D non-TOF PET scanner 
+# - generate noisy measured projection data
+# - use MLEM to reconstruct all data sets
 
 # +
+#--- import of external python modules we need ---
 import numpy as np
 
 import cupy as cp
@@ -13,11 +20,15 @@ from parallelproj.utils import tonumpy
 
 import matplotlib.pyplot as plt
 
+#--- import of custom python modules ---
 from utils import ParallelViewProjector3D
 from shapes import generate_random_3d_image
 # -
 
-# ### setup a batch of "random" ground truth images
+# ### 1.1 setup a batch of "random" ground truth images
+#
+# - use a custom function to generate a data base of random 3D blob-like images
+# - we store all images directly as cupy GPU arrays
 
 # +
 # seed the random generator, since we are using random images
@@ -25,27 +36,42 @@ seed = 0
 cp.random.seed(seed)
 np.random.seed(seed)
 
-# image size in trans-axial and axial direction
-n_trans = 128
-n_ax = 16
-img_shape = (n_trans, n_trans, n_ax)
+#----------------------------------------------------
+#--- image input parameters -------------------------
 
-# total number of images to simulated
+# set the total number of images to be generated
 num_images = 30
 
-# voxel size of the image
+# set the image size in trans-axial and axial direction
+n_trans = 128
+n_ax = 16
+
+# set the voxel size of the images (in mm)
 voxel_size = cp.array([2., 2., 2.]).astype(cp.float32)
 
-# image origin -> world coordinates of the [0,0,0] voxel
+#----------------------------------------------------
+#----------------------------------------------------
+
+# setup a tuple containing the image shape (dimensions)
+img_shape = (n_trans, n_trans, n_ax)
+
+
+# setup the "image origin" -> world coordinates of the [0,0,0] voxel
 img_origin = ((-cp.array(img_shape) / 2 + 0.5) * voxel_size).astype(cp.float32)
 
+# allocated an empty cupy GPU array for all 3D images
 img_dataset = cp.zeros((num_images, ) + img_shape, dtype=cp.float32)
-
+# generate the dataset of random 3D images
 for i in range(num_images):
     img_dataset[i, ...] = generate_random_3d_image(n_trans, n_ax, cp, ndi)
+    
+print(f'image data base shape (# images, # n0, # n1, # n2) :{img_dataset.shape}')
 # -
 
-# ### setup a simple "3D" parallel view non-tof projector
+# ### 1.2 setup a simple "3D" parallel view non-tof projector
+#
+# - setup a projector for a generic 3D parallel view projector
+# - to accelerate projection times, we setup a projector with a small ring difference
 
 # +
 # setup the coordinates for projections along parallel views
@@ -54,12 +80,18 @@ num_rad = 111  # number of radial elements in the sinogram
 num_phi = 190  # number of views in the sinogram
 scanner_R = 350.  # "radius" of the scanner in mm
 
-# radial coordinates of the projection views in mm
+
 rmax = 1.4 * float(voxel_size[0] * n_trans / 2)
+ring_spacing = 4.
+
+#-------------------------------------------------------------
+#-------------------------------------------------------------
+
+# radial coordinates of the projection views in mm
 r = cp.linspace(-rmax, rmax, int(2 * rmax / 3.), dtype=cp.float32)
 view_angles = cp.linspace(0, cp.pi, num_phi, endpoint=False, dtype=cp.float32)
 
-ring_spacing = 4.
+
 num_rings = int((img_shape[2] - 1) * voxel_size[2] / ring_spacing) + 1
 ring_positions = cp.linspace(img_origin[2],
                              img_origin[2] +
@@ -75,30 +107,42 @@ projector = ParallelViewProjector3D(img_shape,
                                     img_origin,
                                     voxel_size,
                                     cp,
-                                    max_ring_diff=9)
+                                    max_ring_diff=5)
 
-#-
+print(f'projector input (image) shape (# n0, # n1, # n2) :{projector.in_shape}')
+print(f'projector output (sinogram) shape (# views, # radial elements, # projection planes) :{projector.out_shape}')
+# -
 
-# ### show the projector geometry
-
-#fig_proj = projector.show_views(image=img_dataset[0, ...], cmap='Greys')
-
-# ### generate the attenuation images, attenuation sinograms, and sensitivity sinograms for our forward model
+# ### 1.3 setup of multiplicative correction (attenuation and sensitivity) sinograms
+#
+# Setup the multiplicative correction sinograms we need in our forward model:
+#
+# $$y = A \,x + s $$ 
+#
+# with the forward operator
+#
+# $$ A = M \, PG$$
+#
+# where $G$ is a Gaussian convolution in image space, $P$ is the (geometrical) forward projection, and $M$ is a diagonal matrix (point-wise multiplication with attenuation and sensitivity sinogram). 
 
 # +
+# allocate memory for attenuation images and sinograms
 att_img_dataset = cp.zeros((num_images, ) + img_shape, dtype=cp.float32)
 att_sino_dataset = cp.zeros((num_images, ) + projector.out_shape,
                             dtype=cp.float32)
 
 for i in range(num_images):
     # the attenuation coefficients in 1/mm
+    # assume that our objects contain water attenuation
     att_img_dataset[i,
                     ...] = 0.01 * (img_dataset[i, ...] > 0).astype(cp.float32)
     att_sino_dataset[i, ...] = cp.exp(-projector(att_img_dataset[i, ...]))
 
 # generate a constant sensitivity sinogram
+# this values can be used to control the number of simulated counts (the noise level) 
+sens_value = 0.2
 sens_sino_dataset = cp.full((num_images, ) + projector.out_shape,
-                            0.2,
+                            sens_value,
                             dtype=cp.float32)
 
 # multiply each sensitivty sinogram with a random factor between 0.5 and 2.0
@@ -108,50 +152,87 @@ for i in range(num_images):
 
 # generate sinograms of multiplicative corrections (attention times sensitivity)
 mult_corr_dataset = att_sino_dataset * sens_sino_dataset
+# -
+
+# ### 1.4 setup an image-based resolution model
+#
+# - setup the image-based Gaussian convolution operator $G$ that we use to simulate the limited resolution of our scanner
 
 # +
+simulated_resolution_mm = 4.5
+
 image_space_filter = GaussianFilterOperator(projector.in_shape,
                                             ndi,
                                             cp,
-                                            sigma=4.5 / (2.35 * voxel_size))
+                                            sigma=simulated_resolution_mm / (2.35 * voxel_size))
 
 # setup a projector including an image-based resolution model
+# in the notation of our forward model this is (PG)
 projector_with_res_model = CompositeLinearOperator(
     (projector, image_space_filter))
+# -
+
+# ### 1.5 apply the forward model to our simulated ground truth images
+#
+# we evaluate $$M\,PG x$$ for all simulated images
 
 # +
-# apply the forward model to generate noise-free data
+# allocated memory for the noise-free forward projections
 img_fwd_dataset = cp.zeros((num_images, ) + projector_with_res_model.out_shape,
                            dtype=cp.float32)
-add_corr_dataset = cp.zeros(
-    (num_images, ) + projector_with_res_model.out_shape, dtype=cp.float32)
-adjoint_ones_dataset = cp.zeros((num_images, ) + img_shape, dtype=cp.float32)
 
+# apply the forward model to generate noise-free data
 for i in range(num_images):
     img_fwd_dataset[i,
                     ...] = mult_corr_dataset[i,
                                              ...] * projector_with_res_model(
                                                  img_dataset[i, ...])
+# -
 
+# ### 1.6 generate the additive (scatter + randoms) correction sinograms
+#
+# - we setup the expectation of the additive correction sinograms $s$ assuming a constant background contamination
+
+# +
+add_corr_dataset = cp.zeros(
+    (num_images, ) + projector_with_res_model.out_shape, dtype=cp.float32)
+
+
+for i in range(num_images):
     # generate a constant contamination sinogram
     add_corr_dataset[i, ...] = cp.full(img_fwd_dataset[i, ...].shape,
                                        0.5 * img_fwd_dataset[i, ...].mean(),
                                        dtype=cp.float32)
+# -
+
+# ### 1.7 generate noisy projection data following a Poisson distribution
+#
+# $$d = \text{Poisson}(A\,x + s)$$
 
 # generate noisy data
 data_dataset = cp.random.poisson(img_fwd_dataset + add_corr_dataset)
-# -
 
-# ### generate the sensitivity images (adjoint operator applied to a sinogram of ones)
+# ### 1.8 generate the sensitivity images (adjoint operator applied to a sinogram of ones)
+#
+# For MLEM, we need the "sensitivy images" 
+#
+# $$ b = A^H \mathbb{1} = (PG)^H M^H \mathbb{1} $$
+#
+#
 
 # +
 # create the sensitivity images (adjoint applied to "ones")
+adjoint_ones_dataset = cp.zeros((num_images, ) + img_shape, dtype=cp.float32)
+
 for i in range(num_images):
     adjoint_ones_dataset[i, ...] = projector_with_res_model.adjoint(
         mult_corr_dataset[i, ...])
 # -
 
-# ### show the first 5 data sets
+# ### 1.9 show the first 5 data sets
+#
+# - show the first 5 simulated activity images, attenuation images, multiplicative correction sinograms and noisy emission sinograms
+# - we show the "central slice" of the image and the "central slice" of the direct sinogram planes
 
 # +
 vmax = float(1.1 * img_dataset.max())
@@ -193,7 +274,18 @@ for axx in ax.ravel():
 fig.tight_layout()
 # -
 
-# ## run MLEM
+# ## 1.10 reconstruct all simulated data sets using early-stopped MLEM
+#
+# we use 100 MLEM updates
+#
+# $$ x^+ = \frac{x}{A^H \mathbb{1}} A^H \frac{d}{A\,x + s}$$
+#
+# $$ x^+ = \frac{x}{(PG)^H M^H \mathbb{1}} (PG)^H M^H \frac{d}{M\, PG \,x + s}$$
+#
+# to reconstruct all our simulated data sets.
+#
+# **Note that our MLEM implementation runs directly on our GPU meaning that there is no memory transfer between host and GPU.**
+#
 
 # +
 num_iter_mlem = 100
@@ -212,10 +304,12 @@ for it in range(num_iter_mlem):
 print('')
 # -
 
-# ### show all MLEM reconstructions
+# ### 1.11 show MLEM reconstructions
+#
+# we show the MLEM reconstructions of the first 5 data sets and compare them to the ground truth images
 
 # +
-figm, axm = plt.subplots(2, 5, figsize=(2.5 * 5, 2.5 * 2))
+figm, axm = plt.subplots(3, 5, figsize=(2.5 * 5, 2.5 * 3))
 for i in range(5):
     im0 = axm[0, i].imshow(tonumpy(img_dataset[i, ..., img_sl], cp),
                            cmap='Greys',
@@ -225,13 +319,19 @@ for i in range(5):
                            cmap='Greys',
                            vmin=0,
                            vmax=vmax)
+    im2 = axm[2, i].imshow(tonumpy(
+        ndi.gaussian_filter(x_mlem_dataset[i, ..., img_sl], 1.3), cp),
+                           cmap='Greys',
+                           vmin=0,
+                           vmax=vmax)
 
     cb0 = figm.colorbar(im0, fraction=0.03, location='bottom')
     cb1 = figm.colorbar(im1, fraction=0.03, location='bottom')
+    cb2 = figm.colorbar(im2, fraction=0.03, location='bottom')
 
     axm[0, i].set_title(f'ground truth image {i:03}', fontsize='medium')
-    axm[1, i].set_title(f'MLEM {i:03} - {num_iter_mlem:03} it.',
-                        fontsize='medium')
+    axm[1, i].set_title(f'MLEM {i:03}', fontsize='medium')
+    axm[2, i].set_title(f'post-smoothed MLEM {i:03}', fontsize='medium')
 
 for axx in axm.ravel():
     axx.axis('off')
