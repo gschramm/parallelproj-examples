@@ -274,7 +274,7 @@ for axx in ax.ravel():
 fig.tight_layout()
 # -
 
-# ## 1.10 reconstruct all simulated data sets using early-stopped MLEM
+# ### 1.10 reconstruct all simulated data sets using early-stopped MLEM
 #
 # we use 100 MLEM updates
 #
@@ -405,7 +405,7 @@ x_mlem_dataset_t = torch.clone(x0_mlem_dataset_t)
 
 # -
 
-# ### Part 2.2 pytorch module-based MLEM
+# ### 2.2 pytorch module-based MLEM
 #
 # We execute MLEM reconstructions of all data sets, by passing our data repetitively through our custom PoissonEMModules.
 # Note that the module acts on a batch of data sets.
@@ -418,9 +418,10 @@ for it in range(num_iter_mlem):
                                          add_corr_dataset_t,
                                          adjoint_ones_dataset_t)
 print('')
-# ### Part 2.3 compare cupy and pytorch MLEM results 
+
+# ### 2.3 compare cupy and pytorch MLEM results 
 #
-# If our implementation of the pytorch module based MLEM reconstruction is correct, the difference to the results obtained in Part 1 should be "small" (in the order of 1e-5). Note that the difference is not exactly zero due to parallel addition of floating point numbers with limited precision.
+#  If our implementation of the pytorch module based MLEM reconstruction is correct, the difference to the results obtained in Part 1 should be "small" (in the order of 1e-5). Note that the difference is not exactly zero due to parallel addition of floating point numbers with limited precision.
 
 # +
 # convert the torch MLEM reconstruction array back to cupy for comparison and visualization
@@ -433,7 +434,7 @@ print(
 )
 # -
 
-# ### Part 2.4 visualize the pytorch and cupy MLEM reconstructions
+# ### 2.4 visualize the pytorch and cupy MLEM reconstructions
 
 # +
 # visualize the torch reconstructions
@@ -467,6 +468,14 @@ for axx in axm.ravel():
 figm.tight_layout()
 # -
 
+# ### 2.5 summary of Part 2
+#
+# In part 2 we have:
+# - setup a custom pytorch module that computes a single MLEM update on a data batch
+# - we can use those modules to perform an iterative MLEM reconstruction
+#
+# Now, we are ready to setup an unrolled variational network consisting of PoissonEMModules and neural network modules with trainable parameters (see part 3).
+
 # ---
 # ---
 # ---
@@ -477,7 +486,7 @@ figm.tight_layout()
 # ---
 # ---
 
-# ## Part 3: Supervised training of a unrolled variational network
+# ## Part 3: Supervised training of an unrolled variational network
 
 # +
 from torch_utils import UnrolledVarNet, Unet3D
