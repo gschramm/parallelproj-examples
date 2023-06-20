@@ -6,7 +6,7 @@
 #
 # In this part, we will:
 # - simulate a data base of random 3D objects
-# - setup a projector for a "small" generic 3D non-TOF PET scanner 
+# - setup a projector for a "small" generic 3D non-TOF PET scanner
 # - generate noisy measured projection data
 # - use MLEM to reconstruct all data sets
 
@@ -57,7 +57,6 @@ voxel_size = cp.array([2., 2., 2.]).astype(cp.float32)
 # setup a tuple containing the image shape (dimensions)
 img_shape = (n_trans, n_trans, n_ax)
 
-
 # setup the "image origin" -> world coordinates of the [0,0,0] voxel
 img_origin = ((-cp.array(img_shape) / 2 + 0.5) * voxel_size).astype(cp.float32)
 
@@ -66,8 +65,9 @@ img_dataset = cp.zeros((num_images, ) + img_shape, dtype=cp.float32)
 # generate the dataset of random 3D images
 for i in range(num_images):
     img_dataset[i, ...] = generate_random_3d_image(n_trans, n_ax, cp, ndi)
-    
-print(f'image data base shape (# images, # n0, # n1, # n2) :{img_dataset.shape}')
+
+print(
+    f'image data base shape (# images, # n0, # n1, # n2) :{img_dataset.shape}')
 # -
 
 # ### 1.2 setup a simple "3D" parallel view non-tof projector
@@ -82,7 +82,6 @@ num_rad = 111  # number of radial elements in the sinogram
 num_phi = 190  # number of views in the sinogram
 scanner_R = 350.  # "radius" of the scanner in mm
 
-
 rmax = 1.4 * float(voxel_size[0] * n_trans / 2)
 ring_spacing = 4.
 
@@ -92,7 +91,6 @@ ring_spacing = 4.
 # radial coordinates of the projection views in mm
 r = cp.linspace(-rmax, rmax, int(2 * rmax / 3.), dtype=cp.float32)
 view_angles = cp.linspace(0, cp.pi, num_phi, endpoint=False, dtype=cp.float32)
-
 
 num_rings = int((img_shape[2] - 1) * voxel_size[2] / ring_spacing) + 1
 ring_positions = cp.linspace(img_origin[2],
@@ -111,21 +109,24 @@ projector = ParallelViewProjector3D(img_shape,
                                     cp,
                                     max_ring_diff=5)
 
-print(f'projector input (image) shape (# n0, # n1, # n2) :{projector.in_shape}')
-print(f'projector output (sinogram) shape (# views, # radial elements, # projection planes) :{projector.out_shape}')
+print(
+    f'projector input (image) shape (# n0, # n1, # n2) :{projector.in_shape}')
+print(
+    f'projector output (sinogram) shape (# views, # radial elements, # projection planes) :{projector.out_shape}'
+)
 # -
 
 # ### 1.3 setup of multiplicative correction (attenuation and sensitivity) sinograms
 #
 # Setup the multiplicative correction sinograms we need in our forward model:
 #
-# $$y = A \,x + s $$ 
+# $$y = A \,x + s $$
 #
 # with the forward operator
 #
 # $$ A = M \, PG$$
 #
-# where $G$ is a Gaussian convolution in image space, $P$ is the (geometrical) forward projection, and $M$ is a diagonal matrix (point-wise multiplication with attenuation and sensitivity sinogram). 
+# where $G$ is a Gaussian convolution in image space, $P$ is the (geometrical) forward projection, and $M$ is a diagonal matrix (point-wise multiplication with attenuation and sensitivity sinogram).
 
 # +
 # allocate memory for attenuation images and sinograms
@@ -141,7 +142,7 @@ for i in range(num_images):
     att_sino_dataset[i, ...] = cp.exp(-projector(att_img_dataset[i, ...]))
 
 # generate a constant sensitivity sinogram
-# this values can be used to control the number of simulated counts (the noise level) 
+# this values can be used to control the number of simulated counts (the noise level)
 sens_value = 0.2
 sens_sino_dataset = cp.full((num_images, ) + projector.out_shape,
                             sens_value,
@@ -166,7 +167,8 @@ simulated_resolution_mm = 4.5
 image_space_filter = GaussianFilterOperator(projector.in_shape,
                                             ndi,
                                             cp,
-                                            sigma=simulated_resolution_mm / (2.35 * voxel_size))
+                                            sigma=simulated_resolution_mm /
+                                            (2.35 * voxel_size))
 
 # setup a projector including an image-based resolution model
 # in the notation of our forward model this is (PG)
@@ -199,7 +201,6 @@ for i in range(num_images):
 add_corr_dataset = cp.zeros(
     (num_images, ) + projector_with_res_model.out_shape, dtype=cp.float32)
 
-
 for i in range(num_images):
     # generate a constant contamination sinogram
     add_corr_dataset[i, ...] = cp.full(img_fwd_dataset[i, ...].shape,
@@ -216,7 +217,7 @@ data_dataset = cp.random.poisson(img_fwd_dataset + add_corr_dataset)
 
 # ### 1.8 generate the sensitivity images (adjoint operator applied to a sinogram of ones)
 #
-# For MLEM, we need the "sensitivy images" 
+# For MLEM, we need the "sensitivy images"
 #
 # $$ b = A^H \mathbb{1} = (PG)^H M^H \mathbb{1} $$
 #
@@ -363,10 +364,10 @@ figm.tight_layout()
 #
 # ![](figs/unrolled_mlem.png)
 #
-# In this part, we will implement the series of MLEM updates as an unrolled pytorch network. 
-# In other words, we will setup and use a custom pytorch module that calculates a single MLEM update on a batch of data sets. Repetitive use (stacking) of those modules allows us to re-produce the MLEM reconstructions obtained of part 1. 
+# In this part, we will implement the series of MLEM updates as an unrolled pytorch network.
+# In other words, we will setup and use a custom pytorch module that calculates a single MLEM update on a batch of data sets. Repetitive use (stacking) of those modules allows us to re-produce the MLEM reconstructions obtained of part 1.
 #
-# This is an important pre-cursor for setting up an unrolled variational network including trainable parameters which we will do in Part 3. 
+# This is an important pre-cursor for setting up an unrolled variational network including trainable parameters which we will do in Part 3.
 
 # +
 # import pytorch
@@ -380,7 +381,7 @@ em_module = PoissonEMModule(projector_with_res_model)
 
 # ### 2.1 convert cupy GPU arrays to pytorch GPU tensors
 #
-# To use pytorch, we have to convert our cupy GPU arrays to pytorch GPU tensors. Fortunately, this is possible with zero copy data exchage - see [here](https://docs.cupy.dev/en/stable/user_guide/interoperability.html#pytorch) for details. 
+# To use pytorch, we have to convert our cupy GPU arrays to pytorch GPU tensors. Fortunately, this is possible with zero copy data exchage - see [here](https://docs.cupy.dev/en/stable/user_guide/interoperability.html#pytorch) for details.
 #
 # **Note:**
 #
@@ -423,7 +424,7 @@ for it in range(num_iter_mlem):
                                          adjoint_ones_dataset_t)
 print('')
 
-# ### 2.3 compare cupy and pytorch MLEM results 
+# ### 2.3 compare cupy and pytorch MLEM results
 #
 #  If our implementation of the pytorch module based MLEM reconstruction is correct, the difference to the results obtained in Part 1 should be "small" (in the order of 1e-5). Note that the difference is not exactly zero due to parallel addition of floating point numbers with limited precision.
 
@@ -500,10 +501,11 @@ figm.tight_layout()
 from torch_utils import Unet3D
 
 num_features = 16
-num_downsampling_layers=3
+num_downsampling_layers = 3
 
 # setup a simple CNN that maps a tensor with shape [batch_size, 1, spatial shape] onto a tensor with the same shape
-conv_net = Unet3D(num_features=num_features, num_downsampling_layers=num_downsampling_layers)
+conv_net = Unet3D(num_features=num_features,
+                  num_downsampling_layers=num_downsampling_layers)
 # -
 
 # ### 3.2 Setup of the unrolled variational network
@@ -511,17 +513,16 @@ conv_net = Unet3D(num_features=num_features, num_downsampling_layers=num_downsam
 # +
 from torch_utils import UnrolledVarNet
 
-num_blocks = 5
+num_blocks = 3
 
 # setup the unrolled variational network consiting of block combining MLEM and conv-net updates
 var_net = UnrolledVarNet(em_module, num_blocks=num_blocks, neural_net=conv_net)
 
-
 # +
 import torchmetrics
 
-num_updates = 501
-batch_size = 8
+num_updates = 1001
+batch_size = 5
 num_train = int(0.8 * num_images)
 learning_rate = 1e-3
 data_range = float(img_dataset_t.max())
@@ -579,17 +580,17 @@ for update in range(num_updates):
         validation_psnr.append(
             psnr_fn(y_val_t, img_dataset_t[num_train:, ...]).item())
 
-        # save the model state dict (weights) if the the valdiation loss improves 
+        # save the model state dict (weights) if the the valdiation loss improves
         if validation_loss[-1] == min(validation_loss):
             torch.save(var_net.state_dict(), 'best_var_net_state.ckpt')
-        
+
         print(
             f'update: {update:05} / {num_updates:05} - train loss: {loss.item():.2E} - val loss {validation_loss[-1]:.2E} - val ssim {validation_ssim[-1]:.2E} - val psnr {validation_psnr[-1]:.2E}',
             end='\r')
 
 # save the last state of our variational model
 torch.save(var_net.state_dict(), 'last_var_net_state.ckpt')
-        
+
 print(f'\nconv net weights {var_net._neural_net_weight}')
 
 print(f'min training   loss {training_loss.min():.2E}')
