@@ -1,4 +1,6 @@
 # # Unrolled MLEM and variational networks for Poisson projection data
+#
+# ![](figs/unrolled_varnet.png)
 
 # ## Part 1: MLEM using cupy GPU arrays
 #
