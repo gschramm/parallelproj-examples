@@ -489,6 +489,8 @@ figm.tight_layout()
 # ---
 
 # ## Part 3: Supervised training of an unrolled variational network
+#
+# ![](figs/unrolled_varnet.png)
 
 # ### 3.1 Setup of simple convolutional neural network (3D Unet)
 
