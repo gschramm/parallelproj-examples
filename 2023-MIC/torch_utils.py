@@ -349,11 +349,8 @@ class Unet3D(torch.nn.Module):
         self._num_downsampling_layers = num_downsampling_layers
         self._batch_norm = batch_norm
 
-        self._pool = torch.nn.MaxPool3d((2, 2, 2))
-        self._activation = torch.nn.LeakyReLU()
-
         self._encoder_blocks = torch.nn.ModuleList()
-        self._upsamples = torch.nn.ModuleList()
+        self._upsample_blocks = torch.nn.ModuleList()
         self._decoder_blocks = torch.nn.ModuleList()
 
         self._dropout = torch.nn.Dropout(dropout_rate)
@@ -370,7 +367,7 @@ class Unet3D(torch.nn.Module):
 
         for i in range(self._num_downsampling_layers):
             n = self._num_downsampling_layers - i
-            self._upsamples.append(
+            self._upsample_blocks.append(
                 torch.nn.ConvTranspose3d((2**n) * num_features,
                                          (2**(n - 1)) * num_features,
                                          kernel_size=(2, 2, 2),
@@ -398,7 +395,7 @@ class Unet3D(torch.nn.Module):
                                                device=self._device,
                                                dtype=self._dtype)
 
-        conv_block['activation_1'] = self._activation
+        conv_block['activation_1'] = torch.nn.LeakyReLU()
 
         conv_block['conv_2'] = torch.nn.Conv3d(num_features_mid,
                                                num_features_out,
@@ -411,7 +408,7 @@ class Unet3D(torch.nn.Module):
             conv_block['batch_norm'] = torch.nn.BatchNorm3d(
                 num_features_out, device=self._device)
 
-        conv_block['activation_2'] = self._activation
+        conv_block['activation_2'] = torch.nn.LeakyReLU()
 
         conv_block = torch.nn.Sequential(conv_block)
 
@@ -424,17 +421,15 @@ class Unet3D(torch.nn.Module):
         x_down.append(self._encoder_blocks[0](x))
 
         for i in range(self._num_downsampling_layers):
-            x_down.append(self._encoder_blocks[i + 1](self._pool(x_down[i])))
+            x_down.append(self._encoder_blocks[i + 1](torch.nn.MaxPool3d(
+                (2, 2, 2))(x_down[i])))
 
-        x_up.append(self._dropout(x_down[-1]))
+        x_up = self._dropout(x_down[-1])
 
         for i in range(self._num_downsampling_layers):
-            x_up.append(self._decoder_blocks[i](torch.cat([
-                x_down[self._num_downsampling_layers -
-                       (i + 1)], self._upsamples[i](x_up[-1])
-            ],
-                                                          dim=1)))
+            x_up = self._decoder_blocks[i](torch.cat(
+                [x_down[-(i + 2)], self._upsample_blocks[i](x_up)], dim=1))
 
-        xout = self._final_conv(x_up[-1])
+        xout = self._final_conv(x_up)
 
         return xout

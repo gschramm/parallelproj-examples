@@ -40,7 +40,7 @@ np.random.seed(seed)
 #--- image input parameters -------------------------
 
 # set the total number of images to be generated
-num_images = 30
+num_images = 40
 
 # set the image size in trans-axial and axial direction
 n_trans = 128
@@ -496,7 +496,7 @@ from torch_utils import Unet3D
 num_features = 16
 num_downsampling_layers=3
 
-# setup a simple CNN that maps an image batch onto an image batch
+# setup a simple CNN that maps a tensor with shape [batch_size, 1, spatial shape] onto a tensor with the same shape
 conv_net = Unet3D(num_features=num_features, num_downsampling_layers=num_downsampling_layers)
 # -
 
@@ -514,10 +514,8 @@ var_net = UnrolledVarNet(em_module, num_blocks=num_blocks, neural_net=conv_net)
 # +
 import torchmetrics
 
-
-
-num_updates = 1001
-batch_size = 5
+num_updates = 501
+batch_size = 8
 num_train = int(0.8 * num_images)
 learning_rate = 1e-3
 data_range = float(img_dataset_t.max())
@@ -539,7 +537,7 @@ validation_psnr = []
 # feed a mini batch through the network
 for update in range(num_updates):
     var_net.train()
-    # select a random mini batch from the traning data sets
+    # select a random mini batch from the training data sets
     i_batch = np.random.choice(np.arange(num_train),
                                size=batch_size,
                                replace=False)
@@ -575,10 +573,17 @@ for update in range(num_updates):
         validation_psnr.append(
             psnr_fn(y_val_t, img_dataset_t[num_train:, ...]).item())
 
+        # save the model state dict (weights) if the the valdiation loss improves 
+        if validation_loss[-1] == min(validation_loss):
+            torch.save(var_net.state_dict(), 'best_var_net_state.ckpt')
+        
         print(
             f'update: {update:05} / {num_updates:05} - train loss: {loss.item():.2E} - val loss {validation_loss[-1]:.2E} - val ssim {validation_ssim[-1]:.2E} - val psnr {validation_psnr[-1]:.2E}',
             end='\r')
 
+# save the last state of our variational model
+torch.save(var_net.state_dict(), 'last_var_net_state.ckpt')
+        
 print(f'\nconv net weights {var_net._neural_net_weight}')
 
 print(f'min training   loss {training_loss.min():.2E}')
@@ -611,6 +616,7 @@ figl.tight_layout()
 
 # +
 # inference and plots of results
+var_net.load_state_dict(torch.load('best_var_net_state.ckpt'))
 var_net.eval()
 
 with torch.no_grad():
