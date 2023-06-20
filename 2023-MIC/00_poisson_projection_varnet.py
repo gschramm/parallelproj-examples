@@ -359,6 +359,8 @@ figm.tight_layout()
 
 # ## Part 2: MLEM using an unrolled pytorch network
 #
+# ![](figs/unrolled_mlem.png)
+#
 # In this part, we will implement the series of MLEM updates as an unrolled pytorch network. 
 # In other words, we will setup and use a custom pytorch module that calculates a single MLEM update on a batch of data sets. Repetitive use (stacking) of those modules allows us to re-produce the MLEM reconstructions obtained of part 1. 
 #

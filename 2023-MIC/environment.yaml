@@ -15,4 +15,4 @@ dependencies:
   - ipydrawio-export
   - pytorch >= 2.0
   - torchmetrics
-  - cupy
+#  - cupy
