@@ -644,6 +644,17 @@ with torch.no_grad():
                               adjoint_ones_dataset_t[i_val, ...],
                               verbose=False)
 
+# calculate the validation PSNRs and SSIMs
+val_psnr = [
+    psnr_fn(y_val_t[i, ...], img_dataset_t[num_train + i, ...]).item()
+    for i in range(y_val_t.shape[0])
+]
+
+val_ssim = [
+    ssim_fn(y_val_t[i, ...], img_dataset_t[num_train + i, ...]).item()
+    for i in range(y_val_t.shape[0])
+]
+
 y_train_dataset = cp.ascontiguousarray(cp.from_dlpack(
     y_train_t.detach())).squeeze(1)
 y_val_dataset = cp.ascontiguousarray(cp.from_dlpack(
@@ -712,11 +723,13 @@ for i in range(5):
     cb2 = figv.colorbar(im2, fraction=0.03, location='bottom')
     cb3 = figv.colorbar(im3, fraction=0.03, location='bottom')
 
-    axv[0, i].set_title(f'ground truth image {j:03}', fontsize='medium')
+    axv[0, i].set_title(f'ground truth image {j:03}', fontsize='small')
     axv[1, i].set_title(f'MLEM {j:03} - {num_iter_mlem:03} it.',
-                        fontsize='medium')
-    axv[2, i].set_title(f'p.s. MLEM {j:03}', fontsize='medium')
-    axv[3, i].set_title(f'varnet {j:03}', fontsize='medium')
+                        fontsize='small')
+    axv[2, i].set_title(f'p.s. MLEM {j:03}', fontsize='small')
+    axv[3, i].set_title(
+        f'varnet {j:03} PSNR {val_psnr[i]:.1f} SSIM {val_ssim[i]:.2f}',
+        fontsize='small')
 
 for axx in axv.ravel():
     axx.axis('off')
