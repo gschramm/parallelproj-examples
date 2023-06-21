@@ -156,7 +156,7 @@ for i in range(num_images):
 
 # generate a constant sensitivity sinogram
 # this values can be used to control the number of simulated counts (the noise level)
-sens_value = 2.0
+sens_value = 1.0
 sens_sino_dataset = cp.full((num_images, ) + projector.out_shape,
                             sens_value,
                             dtype=cp.float32)
