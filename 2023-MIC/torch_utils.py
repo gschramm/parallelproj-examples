@@ -218,7 +218,7 @@ class UnrolledVarNet(torch.nn.Module):
 
         self._num_blocks = num_blocks
         self._neural_net_weight = torch.nn.Parameter(
-            torch.ones(self._num_blocks))
+            0.1 * torch.ones(self._num_blocks))
 
     def forward(self,
                 x: torch.Tensor,

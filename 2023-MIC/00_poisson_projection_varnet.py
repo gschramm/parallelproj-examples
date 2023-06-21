@@ -13,6 +13,7 @@
 # +
 #--- import of external python modules we need ---
 import numpy as np
+from pathlib import Path
 
 import cupy as cp
 import cupyx.scipy.ndimage as ndi
@@ -21,10 +22,10 @@ from parallelproj.operators import CompositeLinearOperator, GaussianFilterOperat
 from parallelproj.utils import tonumpy
 
 import matplotlib.pyplot as plt
+import nibabel as nib
 
 #--- import of custom python modules ---
 from utils import ParallelViewProjector3D
-from shapes import generate_random_3d_image
 # -
 
 # ### 1.1 setup a batch of "random" ground truth images
@@ -42,29 +43,44 @@ np.random.seed(seed)
 #--- image input parameters -------------------------
 
 # set the total number of images to be generated
-num_images = 40
+num_images = 60
 
-# set the image size in trans-axial and axial direction
-n_trans = 128
-n_ax = 16
+#----------------------------------------------------
+#----------------------------------------------------
+
+img_dataset = []
+att_img_dataset = []
+subject_dirs = sorted(list(Path('data').glob('subject??')))
+
+# generate the dataset of random 3D images
+for i in range(num_images):
+    subject_index = i // 3
+    image_index = i % 3
+    print(
+        f'loading image {i:03} {subject_dirs[subject_index]} image_{image_index:03}.nii.gz',
+        end='\r')
+    tmp = nib.load(subject_dirs[subject_index] /
+                   f'image_{image_index}.nii.gz').get_fdata()
+    scale = tmp.max()
+    img_dataset.append(
+        cp.swapaxes(cp.asarray(tmp[::2, ::2, 113:145:2] / scale), 0, 1))
+    tmp = 0.01 * nib.load(
+        subject_dirs[subject_index] / 'attenuation_image.nii.gz').get_fdata()
+    att_img_dataset.append(
+        cp.swapaxes(cp.asarray(tmp[::2, ::2, 113:145:2]), 0, 1))
+print('')
+
+img_dataset = cp.array(img_dataset, dtype=cp.float32)
+att_img_dataset = cp.array(att_img_dataset, dtype=cp.float32)
 
 # set the voxel size of the images (in mm)
 voxel_size = cp.array([2., 2., 2.]).astype(cp.float32)
 
-#----------------------------------------------------
-#----------------------------------------------------
-
 # setup a tuple containing the image shape (dimensions)
-img_shape = (n_trans, n_trans, n_ax)
+img_shape = img_dataset.shape[1:]
 
 # setup the "image origin" -> world coordinates of the [0,0,0] voxel
 img_origin = ((-cp.array(img_shape) / 2 + 0.5) * voxel_size).astype(cp.float32)
-
-# allocated an empty cupy GPU array for all 3D images
-img_dataset = cp.zeros((num_images, ) + img_shape, dtype=cp.float32)
-# generate the dataset of random 3D images
-for i in range(num_images):
-    img_dataset[i, ...] = generate_random_3d_image(n_trans, n_ax, cp, ndi)
 
 print(
     f'image data base shape (# images, # n0, # n1, # n2) :{img_dataset.shape}')
@@ -82,7 +98,7 @@ num_rad = 111  # number of radial elements in the sinogram
 num_phi = 190  # number of views in the sinogram
 scanner_R = 350.  # "radius" of the scanner in mm
 
-rmax = 1.4 * float(voxel_size[0] * n_trans / 2)
+rmax = 1.4 * float(voxel_size[0] * img_dataset.shape[1] / 2)
 ring_spacing = 4.
 
 #-------------------------------------------------------------
@@ -130,20 +146,17 @@ print(
 
 # +
 # allocate memory for attenuation images and sinograms
-att_img_dataset = cp.zeros((num_images, ) + img_shape, dtype=cp.float32)
 att_sino_dataset = cp.zeros((num_images, ) + projector.out_shape,
                             dtype=cp.float32)
 
 for i in range(num_images):
     # the attenuation coefficients in 1/mm
     # assume that our objects contain water attenuation
-    att_img_dataset[i,
-                    ...] = 0.01 * (img_dataset[i, ...] > 0).astype(cp.float32)
     att_sino_dataset[i, ...] = cp.exp(-projector(att_img_dataset[i, ...]))
 
 # generate a constant sensitivity sinogram
 # this values can be used to control the number of simulated counts (the noise level)
-sens_value = 0.2
+sens_value = 2.0
 sens_sino_dataset = cp.full((num_images, ) + projector.out_shape,
                             sens_value,
                             dtype=cp.float32)
@@ -241,7 +254,7 @@ for i in range(num_images):
 vmax = float(1.1 * img_dataset.max())
 fig, ax = plt.subplots(4, 5, figsize=(2.5 * 5, 2.5 * 4))
 
-img_sl = n_ax // 2
+img_sl = img_dataset.shape[-1] // 2
 sino_sl = num_rings // 2
 
 for i in range(5):
@@ -513,7 +526,7 @@ conv_net = Unet3D(num_features=num_features,
 # +
 from torch_utils import UnrolledVarNet
 
-num_blocks = 3
+num_blocks = 12
 
 # setup the unrolled variational network consiting of block combining MLEM and conv-net updates
 var_net = UnrolledVarNet(em_module, num_blocks=num_blocks, neural_net=conv_net)
@@ -521,18 +534,18 @@ var_net = UnrolledVarNet(em_module, num_blocks=num_blocks, neural_net=conv_net)
 # +
 import torchmetrics
 
-num_updates = 1001
+num_updates = 2001
 batch_size = 5
 num_train = int(0.8 * num_images)
-learning_rate = 1e-3
+learning_rate = 3e-4
 data_range = float(img_dataset_t.max())
 ssim_fn = torchmetrics.StructuralSimilarityIndexMeasure(
     data_range=data_range).to(x_mlem_dataset_t.device)
 psnr_fn = torchmetrics.PeakSignalNoiseRatio(data_range=data_range).to(
     x_mlem_dataset_t.device)
 
-#loss_fn = torch.nn.MSELoss()
-loss_fn = torch.nn.L1Loss()
+loss_fn = torch.nn.MSELoss()
+#loss_fn = torch.nn.L1Loss()
 
 optimizer = torch.optim.Adam(var_net.parameters(), lr=learning_rate)
 
