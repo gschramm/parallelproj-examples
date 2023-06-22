@@ -42,7 +42,8 @@ np.random.seed(seed)
 #----------------------------------------------------
 #--- image input parameters -------------------------
 
-# set the total number of images to be generated
+# set the number of images to be loaded into our data base 
+# (we have 60 in total)
 num_images = 60
 
 #----------------------------------------------------
@@ -52,22 +53,25 @@ img_dataset = []
 att_img_dataset = []
 subject_dirs = sorted(list(Path('data').glob('subject??')))
 
-# generate the dataset of random 3D images
+# load our "data base" of simulated images based in the brainweb phantom
 for i in range(num_images):
     subject_index = i // 3
     image_index = i % 3
     print(
-        f'loading image {i:03} {subject_dirs[subject_index]} image_{image_index:03}.nii.gz',
+        f'loading image {(i+1):03} {subject_dirs[subject_index]} image_{image_index:03}.nii.gz',
         end='\r')
     tmp = nib.load(subject_dirs[subject_index] /
                    f'image_{image_index}.nii.gz').get_fdata()
     scale = tmp.max()
+    
+    # the images come in 1mm^3 voxels, to reduce comp. time we "downsample" by a factor
+    # of 2 in all directions and select only a few slices
     img_dataset.append(
-        cp.swapaxes(cp.asarray(tmp[::2, ::2, 113:145:2] / scale), 0, 1))
-    tmp = 0.01 * nib.load(
+        cp.swapaxes(cp.pad(cp.asarray(tmp[::2, ::2, 75:107:2] / scale), ((1,1), (1,1), (0,0))), 0, 1))
+    tmp = nib.load(
         subject_dirs[subject_index] / 'attenuation_image.nii.gz').get_fdata()
     att_img_dataset.append(
-        cp.swapaxes(cp.asarray(tmp[::2, ::2, 113:145:2]), 0, 1))
+        cp.swapaxes(cp.pad(cp.asarray(tmp[::2, ::2, 75:107:2]), ((1,1), (1,1), (0,0))), 0, 1))
 print('')
 
 img_dataset = cp.array(img_dataset, dtype=cp.float32)
@@ -156,7 +160,7 @@ for i in range(num_images):
 
 # generate a constant sensitivity sinogram
 # this values can be used to control the number of simulated counts (the noise level)
-sens_value = 1.0
+sens_value = 3.0
 sens_sino_dataset = cp.full((num_images, ) + projector.out_shape,
                             sens_value,
                             dtype=cp.float32)
@@ -304,7 +308,7 @@ fig.tight_layout()
 #
 
 # +
-num_iter_mlem = 100
+num_iter_mlem = 200
 
 x0_mlem_dataset = cp.ones(img_dataset.shape, dtype=cp.float32)
 x_mlem_dataset = x0_mlem_dataset.copy()
@@ -534,10 +538,10 @@ var_net = UnrolledVarNet(em_module, num_blocks=num_blocks, neural_net=conv_net)
 # +
 import torchmetrics
 
-num_updates = 2001
+num_updates = 1001
 batch_size = 5
 num_train = int(0.8 * num_images)
-learning_rate = 3e-4
+learning_rate = 1e-3
 data_range = float(img_dataset_t.max())
 ssim_fn = torchmetrics.StructuralSimilarityIndexMeasure(
     data_range=data_range).to(x_mlem_dataset_t.device)

@@ -7,6 +7,7 @@ dependencies:
   - parallelproj >=1.4
   - matplotlib
   - scipy
+  - nibabel
   - ipython
   - jupyter
   - jupyter_nbextensions_configurator
@@ -15,4 +16,4 @@ dependencies:
   - ipydrawio-export
   - pytorch >= 2.0
   - torchmetrics
-#  - cupy
+  - cupy
