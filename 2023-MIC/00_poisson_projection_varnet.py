@@ -45,7 +45,7 @@ np.random.seed(seed)
 #----------------------------------------------------
 #--- image input parameters -------------------------
 
-# set the number of images to be loaded into our data base 
+# set the number of images to be loaded into our data base
 # (we have 60 in total)
 num_images = 60
 
@@ -66,15 +66,19 @@ for i in range(num_images):
     tmp = nib.load(subject_dirs[subject_index] /
                    f'image_{image_index}.nii.gz').get_fdata()
     scale = tmp.max()
-    
+
     # the images come in 1mm^3 voxels, to reduce comp. time we "downsample" by a factor
     # of 2 in all directions and select only a few slices
     img_dataset.append(
-        cp.swapaxes(cp.pad(cp.asarray(tmp[::2, ::2, 75:107:2] / scale), ((1,1), (1,1), (0,0))), 0, 1))
-    tmp = nib.load(
-        subject_dirs[subject_index] / 'attenuation_image.nii.gz').get_fdata()
+        cp.swapaxes(
+            cp.pad(cp.asarray(tmp[::2, ::2, 75:107:2] / scale),
+                   ((1, 1), (1, 1), (0, 0))), 0, 1))
+    tmp = nib.load(subject_dirs[subject_index] /
+                   'attenuation_image.nii.gz').get_fdata()
     att_img_dataset.append(
-        cp.swapaxes(cp.pad(cp.asarray(tmp[::2, ::2, 75:107:2]), ((1,1), (1,1), (0,0))), 0, 1))
+        cp.swapaxes(
+            cp.pad(cp.asarray(tmp[::2, ::2, 75:107:2]),
+                   ((1, 1), (1, 1), (0, 0))), 0, 1))
 print('')
 
 img_dataset = cp.array(img_dataset, dtype=cp.float32)
@@ -163,7 +167,7 @@ for i in range(num_images):
 
 # generate a constant sensitivity sinogram
 # this values can be used to control the number of simulated counts (the noise level)
-sens_value = 3.0
+sens_value = 5.0
 sens_sino_dataset = cp.full((num_images, ) + projector.out_shape,
                             sens_value,
                             dtype=cp.float32)
@@ -533,7 +537,7 @@ conv_net = Unet3D(num_features=num_features,
 # +
 from torch_utils import UnrolledVarNet
 
-num_blocks = 16
+num_blocks = 6
 
 # setup the unrolled variational network consiting of block combining MLEM and conv-net updates
 var_net = UnrolledVarNet(em_module, num_blocks=num_blocks, neural_net=conv_net)
