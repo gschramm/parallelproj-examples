@@ -25,8 +25,11 @@ import matplotlib.pyplot as plt
 import nibabel as nib
 
 #--- import of custom python modules ---
-from utils import ParallelViewProjector3D
+from utils import ParallelViewProjector3D, download_data
 # -
+
+# download the data we need for this tutorial
+download_data()
 
 # ### 1.1 setup a batch of "random" ground truth images
 #
@@ -195,7 +198,7 @@ projector_with_res_model = CompositeLinearOperator(
 
 # ### 1.5 apply the forward model to our simulated ground truth images
 #
-# we evaluate $$M\,PG x$$ for all simulated images
+# we evaluate $$M\,PG\,x$$ for all simulated images
 
 # +
 # allocated memory for the noise-free forward projections
@@ -530,7 +533,7 @@ conv_net = Unet3D(num_features=num_features,
 # +
 from torch_utils import UnrolledVarNet
 
-num_blocks = 12
+num_blocks = 16
 
 # setup the unrolled variational network consiting of block combining MLEM and conv-net updates
 var_net = UnrolledVarNet(em_module, num_blocks=num_blocks, neural_net=conv_net)
@@ -538,7 +541,7 @@ var_net = UnrolledVarNet(em_module, num_blocks=num_blocks, neural_net=conv_net)
 # +
 import torchmetrics
 
-num_updates = 1001
+num_updates = 1201
 batch_size = 5
 num_train = int(0.8 * num_images)
 learning_rate = 1e-3
