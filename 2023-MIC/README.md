@@ -9,7 +9,7 @@
 
 3. `cd 2023-MIC`
 
-4. Create a virtual environment containing all dependencies we need for this tutorial: `mamba create env -f environment.yaml`
+4. Create a virtual environment containing all dependencies we need for this tutorial: `mamba env create -f environment.yaml`
 
 ## Running this tutorial
 
