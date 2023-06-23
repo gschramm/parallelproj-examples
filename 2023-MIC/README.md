@@ -1,6 +1,6 @@
 ## Local installation / setup
 
-0. **To run these tutorial, you need a recent CUDA-capable GPU.**
+0. **To run these tutorials, you need a recent CUDA-capable GPU.**
 
 1. Install the [mambaforge](https://mamba.readthedocs.io/en/latest/installation.html) python distribution. Mamba is a more efficient drop-in replacement for `conda` with default channel `conda-forge`.
    **In case you have already installed `conda` on your system, you can replace all `mamba` commands with `conda -c conda-forge`**.
