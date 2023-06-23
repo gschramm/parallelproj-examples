@@ -1,14 +1,37 @@
 # # Unrolled MLEM and variational networks for Poisson projection data
 #
+# ---
+# ---
+# ---
+#
+# **The learning objective of this tutorial is to understand how to set up and train an unrolled variational network
+# to reconstruct projection data following a Poisson distribution (e.g. PET or SPECT data) using pytorch.**
+#
 # ![](figs/unrolled_varnet.png)
+#
+# This tutorial is split into three parts to understand the essential steps, tools and building block we need for the setup and training process of our model.
+#
+# In **Part 1**, we will learn how to perform an iterative MLEM reconstruction directly on GPU arrays which are commonly used when training neural networks. 
+#
+# In **Part 2**, we will implement the same MLEM reconstruction using a series of custom pytorch neural network modules.
+#
+# In **Part 3**, we will combine our custom MLEM modules with a trainable neural network into an unrolled variational network that can be trained with pytorch.
+#
+# ---
+# ---
+# ---
 
 # ## Part 1: MLEM using cupy GPU arrays
 #
 # In this part, we will:
-# - simulate a data base of random 3D objects
+# - *simulate a data base* of 3D PET images based on the brainweb phantom
 # - setup a projector for a "small" generic 3D non-TOF PET scanner
 # - generate noisy measured projection data
-# - use MLEM to reconstruct all data sets
+# - implement MLEM to reconstruct all data sets using GPU arrays
+#
+# Understanding how to implement MLEM using GPU arrays is important since those arrays are commonly used when training neural networks. To handle GPU arrays, we will use the [cupy](https://docs.cupy.dev/en/stable/reference/index.html) python package which implements most of the numpy functionality for GPU CUDA arrays.
+#
+#
 
 # +
 #--- import of external python modules we need ---
@@ -28,12 +51,15 @@ import nibabel as nib
 from utils import ParallelViewProjector3D, download_data
 # -
 
+# ### 1.0 Data download 
+
 # download the data we need for this tutorial
+# the data is downloaded into the "data" folder
 download_data()
 
-# ### 1.1 setup a batch of "random" ground truth images
+# ### 1.1 Setup a batch of 3D brain images
 #
-# - use a custom function to generate a data base of random 3D blob-like images
+# - we read 60 "small" 3D images that we downloaded (20 subjects with 3 different random contrasts) 
 # - we store all images directly as cupy GPU arrays
 
 # +
@@ -97,10 +123,10 @@ print(
     f'image data base shape (# images, # n0, # n1, # n2) :{img_dataset.shape}')
 # -
 
-# ### 1.2 setup a simple "3D" parallel view non-tof projector
+# ### 1.2 Setup of a simple "3D" parallel view non-tof projector
 #
-# - setup a projector for a generic 3D parallel view projector
-# - to accelerate projection times, we setup a projector with a small ring difference
+# - set up a projector for a generic 3D non-TOF parallel view projector
+# - to accelerate projection times, we set up a projector with a small axial FOV and small ring difference
 
 # +
 # setup the coordinates for projections along parallel views
@@ -143,7 +169,7 @@ print(
 )
 # -
 
-# ### 1.3 setup of multiplicative correction (attenuation and sensitivity) sinograms
+# ### 1.3 Setup of multiplicative correction (attenuation and sensitivity) sinograms
 #
 # Setup the multiplicative correction sinograms we need in our forward model:
 #
@@ -166,7 +192,7 @@ for i in range(num_images):
     att_sino_dataset[i, ...] = cp.exp(-projector(att_img_dataset[i, ...]))
 
 # generate a constant sensitivity sinogram
-# this values can be used to control the number of simulated counts (the noise level)
+# this value can be used to control the number of simulated counts (the noise level)
 sens_value = 5.0
 sens_sino_dataset = cp.full((num_images, ) + projector.out_shape,
                             sens_value,
@@ -181,9 +207,9 @@ for i in range(num_images):
 mult_corr_dataset = att_sino_dataset * sens_sino_dataset
 # -
 
-# ### 1.4 setup an image-based resolution model
+# ### 1.4 Setup an image-based resolution model
 #
-# - setup the image-based Gaussian convolution operator $G$ that we use to simulate the limited resolution of our scanner
+# - we use a simplistic image-based Gaussian convolution operator $G$ to simulate the limited resolution of our scanner
 
 # +
 simulated_resolution_mm = 4.5
@@ -200,9 +226,9 @@ projector_with_res_model = CompositeLinearOperator(
     (projector, image_space_filter))
 # -
 
-# ### 1.5 apply the forward model to our simulated ground truth images
+# ### 1.5 Apply the forward model to our simulated ground truth images
 #
-# we evaluate $$M\,PG\,x$$ for all simulated images
+# - we evaluate $M\,PG\,x$ for all simulated images
 
 # +
 # allocated memory for the noise-free forward projections
@@ -217,7 +243,7 @@ for i in range(num_images):
                                                  img_dataset[i, ...])
 # -
 
-# ### 1.6 generate the additive (scatter + randoms) correction sinograms
+# ### 1.6 Generate additive (scatter + randoms) correction sinograms
 #
 # - we setup the expectation of the additive correction sinograms $s$ assuming a constant background contamination
 
@@ -232,16 +258,16 @@ for i in range(num_images):
                                        dtype=cp.float32)
 # -
 
-# ### 1.7 generate noisy projection data following a Poisson distribution
+# ### 1.7 Generate noisy projection data following a Poisson distribution
 #
-# $$d = \text{Poisson}(A\,x + s)$$
+# - we generate noisy data $d = \text{Poisson}(A\,x + s) = \text{Poisson}(M\,PG\,x + s)$
 
 # generate noisy data
 data_dataset = cp.random.poisson(img_fwd_dataset + add_corr_dataset)
 
-# ### 1.8 generate the sensitivity images (adjoint operator applied to a sinogram of ones)
+# ### 1.8 Generate the sensitivity images (adjoint operator applied to a sinogram of ones)
 #
-# For MLEM, we need the "sensitivy images"
+# For MLEM, we calculate the "sensitivy images"
 #
 # $$ b = A^H \mathbb{1} = (PG)^H M^H \mathbb{1} $$
 #
@@ -256,7 +282,7 @@ for i in range(num_images):
         mult_corr_dataset[i, ...])
 # -
 
-# ### 1.9 show the first 5 data sets
+# ### 1.9 Show the first 5 data sets
 #
 # - show the first 5 simulated activity images, attenuation images, multiplicative correction sinograms and noisy emission sinograms
 # - we show the "central slice" of the image and the "central slice" of the direct sinogram planes
@@ -301,9 +327,9 @@ for axx in ax.ravel():
 fig.tight_layout()
 # -
 
-# ### 1.10 reconstruct all simulated data sets using early-stopped MLEM
+# ### 1.10 Reconstruct all simulated data sets using early-stopped MLEM
 #
-# we use 100 MLEM updates
+# we use 200 MLEM updates given by
 #
 # $$ x^+ = \frac{x}{A^H \mathbb{1}} A^H \frac{d}{A\,x + s}$$
 #
@@ -311,7 +337,9 @@ fig.tight_layout()
 #
 # to reconstruct all our simulated data sets.
 #
-# **Note that our MLEM implementation runs directly on our GPU meaning that there is no memory transfer between host and GPU.**
+# **Note that:**
+# - our MLEM implementation runs directly on our GPU meaning that there is no memory transfer between host and GPU
+# - we reconstruct all 60 data sets at once
 #
 
 # +
@@ -333,9 +361,9 @@ for it in range(num_iter_mlem):
 print('')
 # -
 
-# ### 1.11 show MLEM reconstructions
+# ### 1.11 Display the first 5 MLEM reconstructions
 #
-# we show the MLEM reconstructions of the first 5 data sets and compare them to the ground truth images
+# - we show the MLEM reconstructions of the first 5 data sets and compare them to the ground truth images
 
 # +
 figm, axm = plt.subplots(3, 5, figsize=(2.5 * 5, 2.5 * 3))
@@ -370,9 +398,9 @@ figm.tight_layout()
 # ### 1.12 Summary of Part 1
 #
 # So far we have:
-# - setup a "simple" forward model $A$
-# - generated a data based of random images, and corresponding emission and correction sinograms
-# - used MLEM to reconstruct all data sets
+# - setup a "simple" forward model $Ax + s$
+# - generated a data set of PET brain images, and corresponding emission and correction sinograms
+# - used MLEM to reconstruct all data sets directly on our GPU
 
 # ---
 # ---
@@ -386,12 +414,16 @@ figm.tight_layout()
 
 # ## Part 2: MLEM using an unrolled pytorch network
 #
+# ---
+# ---
+# ---
+#
 # ![](figs/unrolled_mlem.png)
 #
 # In this part, we will implement the series of MLEM updates as an unrolled pytorch network.
 # In other words, we will setup and use a custom pytorch module that calculates a single MLEM update on a batch of data sets. Repetitive use (stacking) of those modules allows us to re-produce the MLEM reconstructions obtained of part 1.
 #
-# This is an important pre-cursor for setting up an unrolled variational network including trainable parameters which we will do in Part 3.
+# This is an important pre-cursor for setting up a trainable unrolled variational network including trainable parameters which we will do in Part 3.
 
 # +
 # import pytorch
@@ -403,7 +435,7 @@ from torch_utils import PoissonEMModule
 em_module = PoissonEMModule(projector_with_res_model)
 # -
 
-# ### 2.1 convert cupy GPU arrays to pytorch GPU tensors
+# ### 2.1 Convert cupy GPU arrays to pytorch GPU tensors
 #
 # To use pytorch, we have to convert our cupy GPU arrays to pytorch GPU tensors. Fortunately, this is possible with zero copy data exchage - see [here](https://docs.cupy.dev/en/stable/user_guide/interoperability.html#pytorch) for details.
 #
@@ -430,11 +462,12 @@ adjoint_ones_dataset_t = torch.from_dlpack(adjoint_ones_dataset).unsqueeze(1)
 x0_mlem_dataset_t = torch.ones(img_dataset_t.shape,
                                dtype=torch.float32,
                                device=data_dataset_t.device)
+# set up a variable that will contain all our torch MLEM reconstructions
 x_mlem_dataset_t = torch.clone(x0_mlem_dataset_t)
 
 # -
 
-# ### 2.2 pytorch module-based MLEM
+# ### 2.2 Pytorch module-based MLEM
 #
 # We execute MLEM reconstructions of all data sets, by passing our data repetitively through our custom PoissonEMModules.
 # Note that the module acts on a batch of data sets.
@@ -448,9 +481,9 @@ for it in range(num_iter_mlem):
                                          adjoint_ones_dataset_t)
 print('')
 
-# ### 2.3 compare cupy and pytorch MLEM results
+# ### 2.3 Compare cupy and pytorch MLEM results
 #
-#  If our implementation of the pytorch module based MLEM reconstruction is correct, the difference to the results obtained in Part 1 should be "small" (in the order of 1e-5). Note that the difference is not exactly zero due to parallel addition of floating point numbers with limited precision.
+# If our implementation of the pytorch module based MLEM reconstruction is correct, the difference to the results obtained in Part 1 should be "small" (< 1e-5). Note that the difference is not exactly zero due to parallel addition of floating point numbers with limited precision.
 
 # +
 # convert the torch MLEM reconstruction array back to cupy for comparison and visualization
@@ -463,7 +496,7 @@ print(
 )
 # -
 
-# ### 2.4 visualize the pytorch and cupy MLEM reconstructions
+# ### 2.4 Display the pytorch and cupy MLEM reconstructions
 
 # +
 # visualize the torch reconstructions
@@ -497,11 +530,11 @@ for axx in axm.ravel():
 figm.tight_layout()
 # -
 
-# ### 2.5 summary of Part 2
+# ### 2.5 Summary of Part 2
 #
 # In part 2 we have:
-# - setup a custom pytorch module that computes a single MLEM update on a data batch
-# - we can use those modules to perform an iterative MLEM reconstruction
+# - set up / used a custom pytorch module that computes a single MLEM update on a data batch
+# - used a forward pass through a series / stack of those module to implement several MLEM iterations
 #
 # Now, we are ready to setup an unrolled variational network consisting of PoissonEMModules and neural network modules with trainable parameters (see part 3).
 
@@ -511,67 +544,106 @@ figm.tight_layout()
 # ---
 # ---
 # ---
-# ---
-# ---
-# ---
+#
 
 # ## Part 3: Supervised training of an unrolled variational network
 #
+# ---
+# ---
+# ---
+#
+# In the previous part, we have seen how to set ut / use a custom Poisson EM modules to compute an MLEM update. In this part, we will the Poisson EM block and a trainable neural network (e.g. a Unet) into blocks forming an unrolled variational network.
+#
 # ![](figs/unrolled_varnet.png)
 
-# ### 3.1 Setup of simple convolutional neural network (3D Unet)
+# ### 3.1 Set up of simple convolutional neural network (3D Unet)
+#
+# - we set up a demo neural network (a 3D Unet) that maps a batch image tensor of shape (num_batch,1,n0,n1,n2) onto a tensor of the same shape 
 
 # +
 from torch_utils import Unet3D
 
+# number of features in the highest level of the Unet
 num_features = 16
+# number of downsampling layers in the Unet
 num_downsampling_layers = 3
 
 # setup a simple CNN that maps a tensor with shape [batch_size, 1, spatial shape] onto a tensor with the same shape
 conv_net = Unet3D(num_features=num_features,
                   num_downsampling_layers=num_downsampling_layers)
+
+print(conv_net)
 # -
 
-# ### 3.2 Setup of the unrolled variational network
+# ### 3.2 Setup of an unrolled variational network
+#
+# - we combine the custom Poisson EM update module and our trainable neural network into an unrolled variational network
 
 # +
 from torch_utils import UnrolledVarNet
 
+# number of unrolled block in our variational network
 num_blocks = 6
 
 # setup the unrolled variational network consiting of block combining MLEM and conv-net updates
 var_net = UnrolledVarNet(em_module, num_blocks=num_blocks, neural_net=conv_net)
+# -
+
+# ### 3.3 Setup of training parameters and validation metrics 
 
 # +
 import torchmetrics
 
+#---------------------------
+#--- training parameters ---
+#---------------------------
+
+# number of parameter updates
 num_updates = 1201
+# mini batch size
 batch_size = 5
+# number of images to use for training
 num_train = int(0.8 * num_images)
+# learning rate of the optimizer
 learning_rate = 1e-3
+optimizer = torch.optim.Adam(var_net.parameters(), lr=learning_rate)
+# loss function for supervised training
+loss_fn = torch.nn.MSELoss()
+#loss_fn = torch.nn.L1Loss()
+
+training_loss = np.zeros(num_updates)
+
+#---------------------------
+#--- validation metrics ----
+#---------------------------
+
+# metrics to track on validation images
 data_range = float(img_dataset_t.max())
 ssim_fn = torchmetrics.StructuralSimilarityIndexMeasure(
     data_range=data_range).to(x_mlem_dataset_t.device)
 psnr_fn = torchmetrics.PeakSignalNoiseRatio(data_range=data_range).to(
     x_mlem_dataset_t.device)
 
-loss_fn = torch.nn.MSELoss()
-#loss_fn = torch.nn.L1Loss()
-
-optimizer = torch.optim.Adam(var_net.parameters(), lr=learning_rate)
-
-training_loss = np.zeros(num_updates)
 validation_loss = []
 validation_ssim = []
 validation_psnr = []
+# -
 
+# ### 3.4 Training Loop
+#
+# - we train our model by looping over mini-batches of data and by using pytorch's autograd functionality
+
+# +
 # feed a mini batch through the network
 for update in range(num_updates):
     var_net.train()
-    # select a random mini batch from the training data sets
+    
+    # randomly select indices forming our training mini batch
     i_batch = np.random.choice(np.arange(num_train),
                                size=batch_size,
                                replace=False)
+    
+    # feed forward pass of the training mini batch though our model
     y_train_t = var_net.forward(x_mlem_dataset_t[i_batch, ...],
                                 data_dataset_t[i_batch, ...],
                                 mult_corr_dataset_t[i_batch, ...],
@@ -579,24 +651,36 @@ for update in range(num_updates):
                                 adjoint_ones_dataset_t[i_batch, ...],
                                 verbose=False)
 
+    # compute the loss between our predicted data and the reference data
+    # !! in this tutorial, we use the ground truth images as reference
+    #    which are not available in real world applications,
+    #    but can be replaced with any kind of higher-quality images !!
     loss = loss_fn(y_train_t, img_dataset_t[i_batch, ...])
     training_loss[update] = loss.item()
 
+    # calculate the gradient of the loss function and back-propagate it
+    # through the entire network to update the network weights
     optimizer.zero_grad()
     loss.backward()
     optimizer.step()
 
-    # calculate the validation loss
+    
+    #-------------------------------------------
+    #--- validation step -----------------------
+    #-------------------------------------------
+    
     if update % 10 == 0:
         var_net.eval()
         with torch.no_grad():
+            # feed forward pass of validation data
             y_val_t = var_net.forward(x_mlem_dataset_t[num_train:, ...],
                                       data_dataset_t[num_train:, ...],
                                       mult_corr_dataset_t[num_train:, ...],
                                       add_corr_dataset_t[num_train:, ...],
                                       adjoint_ones_dataset_t[num_train:, ...],
                                       verbose=False)
-
+            
+        # calculate the validation loss and all validation metrics
         validation_loss.append(
             loss_fn(y_val_t, img_dataset_t[num_train:, ...]).item())
         validation_ssim.append(
@@ -604,7 +688,7 @@ for update in range(num_updates):
         validation_psnr.append(
             psnr_fn(y_val_t, img_dataset_t[num_train:, ...]).item())
 
-        # save the model state dict (weights) if the the valdiation loss improves
+        # save the model state dict (weights) if the valdiation loss improves
         if validation_loss[-1] == min(validation_loss):
             torch.save(var_net.state_dict(), 'best_var_net_state.ckpt')
 
@@ -612,15 +696,25 @@ for update in range(num_updates):
             f'update: {update:05} / {num_updates:05} - train loss: {loss.item():.2E} - val loss {validation_loss[-1]:.2E} - val ssim {validation_ssim[-1]:.2E} - val psnr {validation_psnr[-1]:.2E}',
             end='\r')
 
+
+        
 # save the last state of our variational model
 torch.save(var_net.state_dict(), 'last_var_net_state.ckpt')
+# -
 
-print(f'\nconv net weights {var_net._neural_net_weight}')
+# ### 3.5 Print the best validation loss and metrics
 
+# +
+print(f'\nconv net fusion weights {var_net._neural_net_weight}\n')
+
+# print the optimal values of the losses and metrics
 print(f'min training   loss {training_loss.min():.2E}')
 print(f'min validation loss {min(validation_loss):.2E}')
 print(f'max validation ssim {max(validation_ssim):.2E}')
 print(f'max validation psnr {max(validation_psnr):.2E}')
+# -
+
+# ### 3.6 Plot validation loss and metrics
 
 # +
 # plot the training and validation loss
@@ -644,14 +738,20 @@ axl[0].set_xlabel('update')
 axl[1].set_xlabel('update')
 axl[2].set_xlabel('update')
 figl.tight_layout()
+# -
+
+# ### 3.7 Inference - predictions using the model with best validation loss
 
 # +
-# inference and plots of results
+# load the model weights that gave the best validation loss
 var_net.load_state_dict(torch.load('best_var_net_state.ckpt'))
+# don't forget to use the model in "eval" mode which changes the
+# behavior of certain layers (e.g. batchnorm or dropout)
 var_net.eval()
 
 with torch.no_grad():
     i_train = np.arange(num_train)
+    # prediction of training data
     y_train_t = var_net.forward(x_mlem_dataset_t[i_train, ...],
                                 data_dataset_t[i_train, ...],
                                 mult_corr_dataset_t[i_train, ...],
@@ -661,6 +761,7 @@ with torch.no_grad():
 
 with torch.no_grad():
     i_val = np.arange(num_train, num_images)
+    # prediction of validation data
     y_val_t = var_net.forward(x_mlem_dataset_t[i_val, ...],
                               data_dataset_t[i_val, ...],
                               mult_corr_dataset_t[i_val, ...],
@@ -668,7 +769,7 @@ with torch.no_grad():
                               adjoint_ones_dataset_t[i_val, ...],
                               verbose=False)
 
-# calculate the validation PSNRs and SSIMs
+# calculate the validation PSNRs and SSIMs for all images
 val_psnr = [
     psnr_fn(y_val_t[i, ...], img_dataset_t[num_train + i, ...]).item()
     for i in range(y_val_t.shape[0])
@@ -679,11 +780,16 @@ val_ssim = [
     for i in range(y_val_t.shape[0])
 ]
 
+# convert the predictions from torch GPU tensors into cupy arrays (for display)
 y_train_dataset = cp.ascontiguousarray(cp.from_dlpack(
     y_train_t.detach())).squeeze(1)
 y_val_dataset = cp.ascontiguousarray(cp.from_dlpack(
     y_val_t.detach())).squeeze(1)
+# -
 
+# ### 3.8 Visualize the results of the predictions of training and validation data
+
+# +
 # visualize the torch reconstructions
 figm, axm = plt.subplots(4, 5, figsize=(2.5 * 5, 2.5 * 4))
 for i in range(5):
