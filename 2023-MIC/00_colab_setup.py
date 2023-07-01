@@ -53,7 +53,7 @@ print(f'running in colab: {in_colab}')
 cuda_present = find_executable('nvidia-smi') is not None
 print(f'cuda present: {cuda_present}')
 
-if in colab:
+if in_colab:
     os.environ['PARALLELPROJ_C_LIB']='/usr/local/lib/libparallelproj_c.so'
     if cuda_present:
         os.environ['PARALLELPROJ_CUDA_LIB']='/usr/local/lib/libparallelproj_cuda.so'
