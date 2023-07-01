@@ -11,7 +11,7 @@
 #
 # This tutorial is split into three parts to understand the essential steps, tools and building block we need for the setup and training process of our model.
 #
-# In **Part 1**, we will learn how to perform an iterative MLEM reconstruction directly on GPU arrays which are commonly used when training neural networks. 
+# In **Part 1**, we will learn how to perform an iterative MLEM reconstruction directly on GPU arrays which are commonly used when training neural networks.
 #
 # In **Part 2**, we will implement the same MLEM reconstruction using a series of custom pytorch neural network modules.
 #
@@ -51,7 +51,7 @@ import nibabel as nib
 from utils import ParallelViewProjector3D, download_data
 # -
 
-# ### 1.0 Data download 
+# ### 1.0 Data download
 
 # download the data we need for this tutorial
 # the data is downloaded into the "data" folder
@@ -59,7 +59,7 @@ download_data()
 
 # ### 1.1 Setup a batch of 3D brain images
 #
-# - we read 60 "small" 3D images that we downloaded (20 subjects with 3 different random contrasts) 
+# - we read 60 "small" 3D images that we downloaded (20 subjects with 3 different random contrasts)
 # - we store all images directly as cupy GPU arrays
 
 # +
@@ -87,8 +87,8 @@ for i in range(num_images):
     subject_index = i // 3
     image_index = i % 3
     print(
-        f'loading image {(i+1):03} {subject_dirs[subject_index]} image_{image_index:03}.nii.gz',
-        end='\r')
+        f'\rloading image {(i+1):03} {subject_dirs[subject_index]} image_{image_index:03}.nii.gz',
+        end='')
     tmp = nib.load(subject_dirs[subject_index] /
                    f'image_{image_index}.nii.gz').get_fdata()
     scale = tmp.max()
@@ -350,7 +350,7 @@ x_mlem_dataset = x0_mlem_dataset.copy()
 
 # MLEM iteration loop
 for it in range(num_iter_mlem):
-    print(f'cupy  MLEM it {(it+1):04} / {num_iter_mlem:04}', end='\r')
+    print(f'\rcupy  MLEM it {(it+1):04} / {num_iter_mlem:04}', end='')
     # loop over all data sets to be reconstructed
     for ib in range(num_images):
         exp = mult_corr_dataset[ib, ...] * projector_with_res_model(
@@ -474,7 +474,7 @@ x_mlem_dataset_t = torch.clone(x0_mlem_dataset_t)
 
 # run MLEM using a custom defined EM_Module
 for it in range(num_iter_mlem):
-    print(f'torch MLEM it {(it+1):04} / {num_iter_mlem:04}', end='\r')
+    print(f'\rtorch MLEM it {(it+1):04} / {num_iter_mlem:04}', end='')
     x_mlem_dataset_t = em_module.forward(x_mlem_dataset_t, data_dataset_t,
                                          mult_corr_dataset_t,
                                          add_corr_dataset_t,
@@ -558,7 +558,7 @@ figm.tight_layout()
 
 # ### 3.1 Set up of simple convolutional neural network (3D Unet)
 #
-# - we set up a demo neural network (a 3D Unet) that maps a batch image tensor of shape (num_batch,1,n0,n1,n2) onto a tensor of the same shape 
+# - we set up a demo neural network (a 3D Unet) that maps a batch image tensor of shape (num_batch,1,n0,n1,n2) onto a tensor of the same shape
 
 # +
 from torch_utils import Unet3D
@@ -589,7 +589,7 @@ num_blocks = 6
 var_net = UnrolledVarNet(em_module, num_blocks=num_blocks, neural_net=conv_net)
 # -
 
-# ### 3.3 Setup of training parameters and validation metrics 
+# ### 3.3 Setup of training parameters and validation metrics
 
 # +
 import torchmetrics
@@ -637,12 +637,12 @@ validation_psnr = []
 # feed a mini batch through the network
 for update in range(num_updates):
     var_net.train()
-    
+
     # randomly select indices forming our training mini batch
     i_batch = np.random.choice(np.arange(num_train),
                                size=batch_size,
                                replace=False)
-    
+
     # feed forward pass of the training mini batch though our model
     y_train_t = var_net.forward(x_mlem_dataset_t[i_batch, ...],
                                 data_dataset_t[i_batch, ...],
@@ -664,11 +664,10 @@ for update in range(num_updates):
     loss.backward()
     optimizer.step()
 
-    
     #-------------------------------------------
     #--- validation step -----------------------
     #-------------------------------------------
-    
+
     if update % 10 == 0:
         var_net.eval()
         with torch.no_grad():
@@ -679,7 +678,7 @@ for update in range(num_updates):
                                       add_corr_dataset_t[num_train:, ...],
                                       adjoint_ones_dataset_t[num_train:, ...],
                                       verbose=False)
-            
+
         # calculate the validation loss and all validation metrics
         validation_loss.append(
             loss_fn(y_val_t, img_dataset_t[num_train:, ...]).item())
@@ -693,11 +692,9 @@ for update in range(num_updates):
             torch.save(var_net.state_dict(), 'best_var_net_state.ckpt')
 
         print(
-            f'update: {update:05} / {num_updates:05} - train loss: {loss.item():.2E} - val loss {validation_loss[-1]:.2E} - val ssim {validation_ssim[-1]:.2E} - val psnr {validation_psnr[-1]:.2E}',
-            end='\r')
+            f'\rupdate: {update:05} / {num_updates:05} - train loss: {loss.item():.2E} - val loss {validation_loss[-1]:.2E} - val ssim {validation_ssim[-1]:.2E} - val psnr {validation_psnr[-1]:.2E}',
+            end='')
 
-
-        
 # save the last state of our variational model
 torch.save(var_net.state_dict(), 'last_var_net_state.ckpt')
 # -
