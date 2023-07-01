@@ -1,3 +1,9 @@
+# ## Google colab setup
+#
+# The following cells are needed to install all dependencies we need for our tutorial on google colab.
+#
+# Before executing those, make sure to **change the Hardware accelerator to GPU**. (Runtime -> change runtime type)
+
 # +
 # check if we are running in google colab
 # if we are running in colab, we install conda/mamba and all dependencies we need
@@ -60,3 +66,7 @@ if in_colab:
 # -
 
 # %cd parallelproj-examples/2023-MIC
+
+# ---
+# ---
+# ---
