@@ -583,7 +583,7 @@ print(conv_net)
 from torch_utils import UnrolledVarNet
 
 # number of unrolled block in our variational network
-num_blocks = 6
+num_blocks = 3
 
 # setup the unrolled variational network consiting of block combining MLEM and conv-net updates
 var_net = UnrolledVarNet(em_module, num_blocks=num_blocks, neural_net=conv_net)
@@ -599,9 +599,9 @@ import torchmetrics
 #---------------------------
 
 # number of parameter updates
-num_updates = 1201
+num_updates = 600
 # mini batch size
-batch_size = 5
+batch_size = 8
 # number of images to use for training
 num_train = int(0.8 * num_images)
 # learning rate of the optimizer
@@ -610,8 +610,6 @@ optimizer = torch.optim.Adam(var_net.parameters(), lr=learning_rate)
 # loss function for supervised training
 loss_fn = torch.nn.MSELoss()
 #loss_fn = torch.nn.L1Loss()
-
-training_loss = np.zeros(num_updates)
 
 #---------------------------
 #--- validation metrics ----
@@ -623,10 +621,6 @@ ssim_fn = torchmetrics.StructuralSimilarityIndexMeasure(
     data_range=data_range).to(x_mlem_dataset_t.device)
 psnr_fn = torchmetrics.PeakSignalNoiseRatio(data_range=data_range).to(
     x_mlem_dataset_t.device)
-
-validation_loss = []
-validation_ssim = []
-validation_psnr = []
 # -
 
 # ### 3.4 Training Loop
@@ -634,6 +628,11 @@ validation_psnr = []
 # - we train our model by looping over mini-batches of data and by using pytorch's autograd functionality
 
 # +
+training_loss = np.zeros(num_updates)
+validation_loss = []
+validation_ssim = []
+validation_psnr = []
+
 # feed a mini batch through the network
 for update in range(num_updates):
     var_net.train()
@@ -668,7 +667,7 @@ for update in range(num_updates):
     #--- validation step -----------------------
     #-------------------------------------------
 
-    if update % 10 == 0:
+    if (update+1) % 10 == 0:
         var_net.eval()
         with torch.no_grad():
             # feed forward pass of validation data
@@ -690,13 +689,36 @@ for update in range(num_updates):
         # save the model state dict (weights) if the valdiation loss improves
         if validation_loss[-1] == min(validation_loss):
             torch.save(var_net.state_dict(), 'best_var_net_state.ckpt')
+            
+        i_train = np.arange(1, update + 2)
+        i_val = np.arange(len(validation_loss)) * 10 + 1
+
+        # plot the losses and validation metrics and save to file
+        figl, axl = plt.subplots(1, 3, figsize=(10, 4), sharex=True)
+        axl[0].plot(i_train, training_loss[:(update+1)], '.-', label='training loss')
+        axl[0].plot(i_val, validation_loss, '.-', label='validation loss')
+        axl[0].legend()
+        axl[0].grid(ls=':')
+        axl[0].set_title('losses')
+        axl[1].plot(i_val, validation_ssim, '.-')
+        axl[1].grid(ls=':')
+        axl[1].set_title('validation ssim')
+        axl[2].plot(i_val, validation_psnr, '.-')
+        axl[2].grid(ls=':')
+        axl[2].set_title('validation PSNR')
+        axl[0].set_xlabel('update')
+        axl[1].set_xlabel('update')
+        axl[2].set_xlabel('update')
+        figl.tight_layout()
+        figl.savefig('loss_metrics.png')
+        plt.close(figl)
 
         print(
-            f'\rupdate: {update:05} / {num_updates:05} - train loss: {loss.item():.2E} - val loss {validation_loss[-1]:.2E} - val ssim {validation_ssim[-1]:.2E} - val psnr {validation_psnr[-1]:.2E}',
+            f'\rupdate: {(update+1):05} / {num_updates:05} - train loss: {loss.item():.2E} - val loss {validation_loss[-1]:.2E} - val ssim {validation_ssim[-1]:.2E} - val psnr {validation_psnr[-1]:.2E}',
             end='')
 
-# save the last state of our variational model
-torch.save(var_net.state_dict(), 'last_var_net_state.ckpt')
+        # save the last state of our variational model
+        torch.save(var_net.state_dict(), 'last_var_net_state.ckpt')
 # -
 
 # ### 3.5 Print the best validation loss and metrics
@@ -721,7 +743,7 @@ i_val = np.arange(len(validation_loss)) * 10 + 1
 figl, axl = plt.subplots(1, 3, figsize=(10, 4), sharex=True)
 axl[0].plot(training_loss, '.-', label='training loss')
 axl[0].plot(i_val, validation_loss, '.-', label='validation loss')
-axl[0].set_ylim(0, training_loss[10:].max())
+axl[0].set_ylim(None, training_loss[10:].max())
 axl[0].legend()
 axl[0].grid(ls=':')
 axl[0].set_title('losses')

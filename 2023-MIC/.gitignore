@@ -2,3 +2,4 @@ test*
 *.ckpt
 data/*
 *.ipynb
+*.png
