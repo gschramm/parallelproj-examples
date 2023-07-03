@@ -3,3 +3,4 @@ test*
 data/*
 *.ipynb
 *.png
+wip/*
