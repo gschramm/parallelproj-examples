@@ -2,6 +2,7 @@
 
 # +
 from pathlib import Path
+import distutils
 
 INCOLAB = True
 
@@ -11,23 +12,33 @@ except:
     INCOLAB = False
 
 if INCOLAB:
+    # install extra packages needed on colab
     !pip3 install array-api-compat
+    # get the backend files from github
     if not Path('backend.py').exists():
         !wget https://raw.githubusercontent.com/gschramm/parallelproj-examples/main/2023-MIC/backend.py
     if not Path('projector_kernels.cu').exists():
         !wget https://raw.githubusercontent.com/gschramm/parallelproj-examples/main/2023-MIC/projector_kernels.cu
+
+    colab_cuda_present = distutils.spawn.find_executable('nvidia-smi') is not None
+
+    if not colab_cuda_present:
+        raise ValueError('change colab runtime type to GPU! Click on Runtime -> Change runtime type -> Hardware acceleator -> GPU')
 # - 
 
 # +
+# choose torch as array backend
 import array_api_compat.torch as xp
+
+from array_api_compat import to_device
+import matplotlib.pyplot as plt
+
+from backend import ParallelViewProjector3D
 dev = 'cuda'
 
 print(f'running on {dev} device using {xp.__name__}')
 # -
 
-from array_api_compat import to_device
-import matplotlib.pyplot as plt
-from backend import ParallelViewProjector3D
 
 # ### Image parameters
 
