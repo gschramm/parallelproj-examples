@@ -4,7 +4,6 @@ channels:
   - conda-forge
 
 dependencies:
-  - parallelproj >=1.5
   - matplotlib
   - scipy
   - nibabel
