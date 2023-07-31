@@ -1,7 +1,24 @@
 # # Forward and back projection tutorial
 
 # +
-from __future__ import annotations
+from pathlib import Path
+
+INCOLAB = True
+
+try:
+    import google.colab
+except:
+    INCOLAB = False
+
+if INCOLAB:
+    !pip3 install array-api-compat
+    if not Path('backend.py').exists():
+        !wget https://raw.githubusercontent.com/gschramm/parallelproj-examples/main/2023-MIC/backend.py
+    if not Path('projector_kernels.cu').exists():
+        !wget https://raw.githubusercontent.com/gschramm/parallelproj-examples/main/2023-MIC/projector_kernels.cu
+# - 
+
+# +
 import array_api_compat.torch as xp
 dev = 'cuda'
 
