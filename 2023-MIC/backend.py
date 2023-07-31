@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import abc
 import math
 import numpy as np
 import numpy.typing as npt
@@ -10,6 +11,8 @@ import requests
 import zipfile
 import io
 from pathlib import Path
+
+from types import ModuleType
 
 cuda_kernel_file = 'projector_kernels.cu'
 
@@ -140,7 +143,162 @@ def joseph3d_back(xstart: npt.ArrayLike,
 
     return xp.asarray(back_img, device=array_api_compat.device(img_fwd))
 
-class ParallelViewProjector3D():
+class LinearOperator(abc.ABC):
+    """abstract base class for linear operators"""
+
+    def __init__(self, xp: ModuleType):
+        """init method
+
+        Parameters
+        ----------
+        xp : ModuleType
+            numpy or cupy module
+        """
+        self._scale = 1
+        self._xp = xp
+
+    @property
+    @abc.abstractmethod
+    def in_shape(self) -> tuple[int, ...]:
+        """shape of the input array"""
+        raise NotImplementedError
+
+    @property
+    @abc.abstractmethod
+    def out_shape(self) -> tuple[int, ...]:
+        """shape of the output array"""
+        raise NotImplementedError
+
+    @property
+    def scale(self) -> int | float | complex:
+        """scalar factor applied to the linear operator"""
+        return self._scale
+
+    @scale.setter
+    def scale(self, value: int | float | complex):
+        if not np.isscalar(value):
+            raise ValueError
+        self._scale = value
+
+    @property
+    def xp(self) -> ModuleType:
+        """module type (numpy or cupy) of the operator"""
+        return self._xp
+
+    @abc.abstractmethod
+    def _apply(self, x):
+        """forward step y = Ax"""
+        raise NotImplementedError
+
+    @abc.abstractmethod
+    def _adjoint(self, y):
+        """adjoint step x = A^H y"""
+        raise NotImplementedError
+
+    def apply(self, x):
+        """forward step y = scale * Ax
+
+        Parameters
+        ----------
+        x : numpy or cupy array
+
+        Returns
+        -------
+        numpy or cupy array
+        """
+        if self._scale == 1:
+            return self._apply(x)
+        else:
+            return self._scale * self._apply(x)
+
+    def __call__(self, x):
+        return self.apply(x)
+
+    def adjoint(self, y):
+        """adjoint step x = conj(scale) * A^H y
+
+        Parameters
+        ----------
+        y : numpy or cupy array
+
+        Returns
+        -------
+        numpy or cupy array
+        """
+        if self._scale == 1:
+            return self._adjoint(y)
+        else:
+            return np.conj(self._scale) * self._adjoint(y)
+
+    def adjointness_test(self, verbose=False, iscomplex=False, **kwargs):
+        """test whether the adjoint is correctly implemented
+
+        Parameters
+        ----------
+        verbose : bool, optional
+            verbose output
+        iscomplex : bool, optional
+            use complex arrays
+        """
+
+        x = self.xp.asarray(np.random.rand(*self.in_shape))
+        y = self.xp.asarray(np.random.rand(*self.out_shape))
+
+        if iscomplex:
+            x = x + 1j * self.xp.random.rand(*self.in_shape)
+
+        if iscomplex:
+            y = y + 1j * self.xp.random.rand(*self.out_shape)
+
+        x_fwd = self.apply(x)
+        y_adj = self.adjoint(y)
+
+        if iscomplex:
+            ip1 = complex(self.xp.sum(self.xp.conj(x_fwd) * y))
+            ip2 = complex(self.xp.sum(self.xp.conj(x) * y_adj))
+        else:
+            ip1 = float(self.xp.sum(x_fwd * y))
+            ip2 = float(self.xp.sum(x * y_adj))
+
+        if verbose:
+            print(ip1, ip2)
+
+        assert (np.isclose(ip1, ip2, **kwargs))
+
+    def norm(self, num_iter=30, iscomplex=False, verbose=False) -> float:
+        """estimate norm of the linear operator using power iterations
+
+        Parameters
+        ----------
+        num_iter : int, optional
+            number of power iterations
+        iscomplex : bool, optional
+            use complex arrays
+        verbose : bool, optional
+            verbose output
+
+        Returns
+        -------
+        float
+            the norm of the linear operator
+        """
+        x = self.xp.random.rand(*self.in_shape)
+
+        if iscomplex:
+            x = x + 1j * self.xp.random.rand(*self.in_shape)
+
+        for i in range(num_iter):
+            x = self.adjoint(self.apply(x))
+            norm_squared = self.xp.linalg.norm(x)
+            x /= norm_squared
+
+            if verbose:
+                print(f'{(i+1):03} {self.xp.sqrt(norm_squared):.2E}')
+
+        return float(self.xp.sqrt(norm_squared))
+
+
+class ParallelViewProjector3D(LinearOperator):
     """3D non-TOF parallel view projector"""
 
     def __init__(self,
@@ -177,7 +335,7 @@ class ParallelViewProjector3D():
             maximum ring difference - default is None (no limit)
         """
 
-        self._xp = array_api_compat.get_namespace(radial_positions)
+        super().__init__(array_api_compat.get_namespace(radial_positions))
 
         self._radial_positions = radial_positions
         self._device = array_api_compat.device(radial_positions)
@@ -275,10 +433,6 @@ class ParallelViewProjector3D():
                        2] = self._ring_positions[self._end_plane_number[i]]
 
     @property
-    def xp(self):
-        return self._xp
-
-    @property
     def in_shape(self):
         return self._image_shape
 
@@ -306,15 +460,12 @@ class ParallelViewProjector3D():
     def xend(self) -> npt.ArrayLike:
         return self._xend
 
-    def __call__(self, x: npt.ArrayLike) -> npt.ArrayLike:
-        return self.forward(x)
-
-    def forward(self, x: npt.ArrayLike) -> npt.ArrayLike:
+    def _apply(self, x: npt.ArrayLike) -> npt.ArrayLike:
         y = joseph3d_fwd(self._xstart, self._xend, x,
                                       self.image_origin, self.voxel_size)
         return y
 
-    def adjoint(self, y: npt.ArrayLike) -> npt.ArrayLike:
+    def _adjoint(self, y: npt.ArrayLike) -> npt.ArrayLike:
         x = joseph3d_back(self._xstart, self._xend,
                                        self.image_shape, self.image_origin,
                                        self.voxel_size, y)
