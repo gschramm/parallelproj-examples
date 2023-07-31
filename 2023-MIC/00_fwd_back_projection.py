@@ -13,18 +13,17 @@ except:
 
 if INCOLAB:
     # install extra packages needed on colab
-    !pip3 install array-api-compat
+    # !pip3 install array-api-compat
     # get the backend files from github
     if not Path('backend.py').exists():
-        !wget https://raw.githubusercontent.com/gschramm/parallelproj-examples/main/2023-MIC/backend.py
+        # !wget https://raw.githubusercontent.com/gschramm/parallelproj-examples/main/2023-MIC/backend.py
     if not Path('projector_kernels.cu').exists():
-        !wget https://raw.githubusercontent.com/gschramm/parallelproj-examples/main/2023-MIC/projector_kernels.cu
+        # !wget https://raw.githubusercontent.com/gschramm/parallelproj-examples/main/2023-MIC/projector_kernels.cu
 
     colab_cuda_present = distutils.spawn.find_executable('nvidia-smi') is not None
 
     if not colab_cuda_present:
         raise ValueError('change colab runtime type to GPU! Click on Runtime -> Change runtime type -> Hardware acceleator -> GPU')
-# - 
 
 # +
 # choose torch as array backend
