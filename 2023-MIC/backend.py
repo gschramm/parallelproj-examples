@@ -140,3 +140,182 @@ def joseph3d_back(xstart: npt.ArrayLike,
 
     return xp.asarray(back_img, device=array_api_compat.device(img_fwd))
 
+class ParallelViewProjector3D():
+    """3D non-TOF parallel view projector"""
+
+    def __init__(self,
+                 image_shape: tuple[int, int, int],
+                 radial_positions: npt.ArrayLike,
+                 view_angles: npt.ArrayLike,
+                 radius: float,
+                 image_origin: tuple[float, float, float],
+                 voxel_size: tuple[float, float],
+                 ring_positions: npt.ArrayLike,
+                 span: int = 1,
+                 max_ring_diff: int | None = None):
+        """init method
+
+        Parameters
+        ----------
+        image_shape : tuple[int, int, int]
+            shape of the input image (n0, n1, n2) (last direction is axial)
+        radial_positions : npt.ArrayLike (numpy, cupy or torch array)
+            radial positions of the projection views in world coordinates
+        view angles : np.ArrayLike (numpy, cupy or torch array)
+            angles of the projection views in radians
+        radius : float
+            radius of the scanner
+        image_origin : tuple[float, float, float]
+            world coordinates of the [0,0,0] voxel
+        voxel_size : tuple[float, float, float]
+            the voxel size in all directions (last direction is axial)
+        ring_positions : numpy or cupy array
+            position of the rings in world coordinates
+        span : int
+            span of the sinogram - default is 1
+        max_ring_diff : int | None
+            maximum ring difference - default is None (no limit)
+        """
+
+        self._xp = array_api_compat.get_namespace(radial_positions)
+
+        self._radial_positions = radial_positions
+        self._device = array_api_compat.device(radial_positions)
+
+        self._image_shape = image_shape
+        self._image_origin = array_api_compat.to_device(
+            self.xp.asarray(image_origin, dtype=self.xp.float32), self._device)
+        self._voxel_size = array_api_compat.to_device(
+            self.xp.asarray(voxel_size, dtype=self.xp.float32), self._device)
+
+        self._view_angles = view_angles
+        self._num_views = self._view_angles.shape[0]
+
+        self._num_rad = radial_positions.shape[0]
+
+        self._radius = radius
+
+        xstart2d = array_api_compat.to_device(
+            self.xp.zeros((self._num_rad, self._num_views, 2),
+                          dtype=self.xp.float32), self._device)
+        xend2d = array_api_compat.to_device(
+            self.xp.zeros((self._num_rad, self._num_views, 2),
+                          dtype=self.xp.float32), self._device)
+
+        for i, phi in enumerate(self._view_angles):
+            # world coordinates of LOR start points
+            xstart2d[:, i, 0] = self._xp.cos(
+                phi) * self._radial_positions + self._xp.sin(
+                    phi) * self._radius
+            xstart2d[:, i, 1] = -self._xp.sin(
+                phi) * self._radial_positions + self._xp.cos(
+                    phi) * self._radius
+            # world coordinates of LOR endpoints
+            xend2d[:, i, 0] = self._xp.cos(
+                phi) * self._radial_positions - self._xp.sin(
+                    phi) * self._radius
+            xend2d[:, i, 1] = -self._xp.sin(
+                phi) * self._radial_positions - self._xp.cos(
+                    phi) * self._radius
+
+        self._ring_positions = ring_positions
+        self._num_rings = ring_positions.shape[0]
+        self._span = span
+
+        if max_ring_diff is None:
+            self._max_ring_diff = self._num_rings - 1
+        else:
+            self._max_ring_diff = max_ring_diff
+
+        if self._span == 1:
+            self._num_segments = 2 * self._max_ring_diff + 1
+            self._segment_numbers = np.zeros(self._num_segments,
+                                             dtype=np.int32)
+            self._segment_numbers[0::2] = np.arange(self._max_ring_diff + 1)
+            self._segment_numbers[1::2] = -np.arange(1,
+                                                     self._max_ring_diff + 1)
+
+            self._num_planes_per_segment = self._num_rings - np.abs(
+                self._segment_numbers)
+
+            self._start_plane_number = []
+            self._end_plane_number = []
+
+            for i, seg_number in enumerate(self._segment_numbers):
+                tmp = np.arange(self._num_planes_per_segment[i])
+
+                if seg_number < 0:
+                    tmp -= seg_number
+
+                self._start_plane_number.append(tmp)
+                self._end_plane_number.append(tmp + seg_number)
+
+            self._start_plane_number = np.concatenate(self._start_plane_number)
+            self._end_plane_number = np.concatenate(self._end_plane_number)
+            self._num_planes = self._start_plane_number.shape[0]
+        else:
+            raise ValueError('span > 1 not implemented yet')
+
+        self._xstart = array_api_compat.to_device(
+            self._xp.zeros(
+                (self._num_rad, self._num_views, self._num_planes, 3),
+                dtype=self._xp.float32), self._device)
+        self._xend = array_api_compat.to_device(
+            self._xp.zeros(
+                (self._num_rad, self._num_views, self._num_planes, 3),
+                dtype=self._xp.float32), self._device)
+
+        for i in range(self._num_planes):
+            self._xstart[:, :, i, :2] = xstart2d
+            self._xend[:, :, i, :2] = xend2d
+
+            self._xstart[:, :, i,
+                         2] = self._ring_positions[self._start_plane_number[i]]
+            self._xend[:, :, i,
+                       2] = self._ring_positions[self._end_plane_number[i]]
+
+    @property
+    def xp(self):
+        return self._xp
+
+    @property
+    def in_shape(self):
+        return self._image_shape
+
+    @property
+    def out_shape(self):
+        return (self._num_rad, self._num_views, self._num_planes)
+
+    @property
+    def voxel_size(self) -> npt.ArrayLike:
+        return self._voxel_size
+
+    @property
+    def image_origin(self) -> npt.ArrayLike:
+        return self._image_origin
+
+    @property
+    def image_shape(self) -> tuple[int, int, int]:
+        return self._image_shape
+
+    @property
+    def xstart(self) -> npt.ArrayLike:
+        return self._xstart
+
+    @property
+    def xend(self) -> npt.ArrayLike:
+        return self._xend
+
+    def __call__(self, x: npt.ArrayLike) -> npt.ArrayLike:
+        return self.forward(x)
+
+    def forward(self, x: npt.ArrayLike) -> npt.ArrayLike:
+        y = joseph3d_fwd(self._xstart, self._xend, x,
+                                      self.image_origin, self.voxel_size)
+        return y
+
+    def adjoint(self, y: npt.ArrayLike) -> npt.ArrayLike:
+        x = joseph3d_back(self._xstart, self._xend,
+                                       self.image_shape, self.image_origin,
+                                       self.voxel_size, y)
+        return x
