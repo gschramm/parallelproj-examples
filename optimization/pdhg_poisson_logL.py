@@ -15,6 +15,7 @@ dev = 'cpu'
 img_shape = (4,3)
 num_data_bins = 20
 num_iter = 1000
+count_factor = 10.
 
 # setup the data operator
 A = xp.asarray(np.random.rand(num_data_bins, math.prod(img_shape)), device=dev)
@@ -24,7 +25,7 @@ P = MatrixOperator(A, img_shape)
 P.scale = 1.0 / P.norm()
 
 # the ground truth image used to generate the data    
-x_true = 1000*xp.asarray(np.random.rand(*P.in_shape), device=dev)
+x_true = count_factor*xp.asarray(np.random.rand(*P.in_shape), device=dev)
 
 # setup known additive contamination and noise-free data
 noisefree_data = P.forward(x_true)
@@ -56,7 +57,7 @@ y_data = 1 - data / (P.forward(x) + contamination)
 # for Poisson data it seems that sigma = 1 is not a good choice
 # instead 1/scale(reconstructed image) seems to work better
 #sigma = 1.
-sigma = float(1 / xp.max(x0))
+sigma = 1*float(1 / xp.max(x0))
 tau = 0.99 / (sigma * P.norm()**2)
 theta = 1.
 
@@ -108,11 +109,19 @@ for i in range(num_iter):
 #--------------------------------------------------------------------------------------------------------
 #--------------------------------------------------------------------------------------------------------
 
-fig, ax = plt.subplots(1, 1, figsize=(8, 5))
-ax.plot(cost_arr, label = 'PDHG')
-ax.plot(cost_arr_mlem, label = 'MLEM')
-ax.grid(ls = ':')
-ax.legend()
-ax.set_xlabel('iteration')
-ax.set_ylabel('cost')
+fig, ax = plt.subplots(1, 2, figsize=(8, 4))
+ax[0].plot(cost_arr, label = 'PDHG')
+ax[0].plot(cost_arr_mlem, label = 'MLEM')
+ax[0].legend()
+ax[1].plot(cost_arr)
+ax[1].plot(cost_arr_mlem)
+
+cmin = min(cost_arr_mlem.min(), cost_arr.min())
+ymax = cost_arr_mlem[max(min(num_iter-10, 50),0):].max()
+ax[1].set_ylim(cmin - 0.1*(ymax - cmin), ymax)
+for axx in ax:
+    axx.grid(ls = ':')
+    axx.set_xlabel('iteration')
+    axx.set_ylabel('negative Poisson logL')
+fig.tight_layout()
 fig.show()
