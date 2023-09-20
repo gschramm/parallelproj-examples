@@ -121,6 +121,49 @@ class MatrixOperator(RealLinearOperator):
     def _adjoint(self, y: npt.NDArray) -> npt.NDArray:
         return xp.reshape(self._A.T @ y, self._in_shape)
 
+class GradientOperator2D(RealLinearOperator):
+    """finite difference gradient operator"""
+
+    def __init__(self, in_shape: tuple[int, ...]) -> None:
+
+        super().__init__()
+        self._in_shape = in_shape
+        self._out_shape = (len(in_shape), ) + in_shape
+
+    @property
+    def in_shape(self) -> tuple[int,...]:
+        return self._in_shape
+    
+    @property
+    def out_shape(self) -> tuple[int,...]:
+        return self._out_shape
+ 
+    def _forward(self, x):
+        g = xp.zeros(self.out_shape, dtype=x.dtype, device=x.device)
+
+        g[0, :-1, :] = x[1:,:] - x[:-1,:]
+        g[1, :, :-1] = x[:,1:] - x[:,:-1]
+
+        return g
+
+    def _adjoint(self, y):
+        tmp0 = xp.asarray(y[0, :, :], copy=True)
+        tmp0[-1,:] = 0 
+
+        tmp1 = xp.asarray(y[1, :, :], copy=True)
+        tmp1[:, -1] = 0 
+
+        div0 = xp.zeros(self.in_shape, dtype=y.dtype, device=y.device)
+        div1 = xp.zeros(self.in_shape, dtype=y.dtype, device=y.device)
+
+        div0[1:, :] = -tmp0[1:,:] + tmp0[:-1,:]
+        div0[0,:] = -tmp0[0, :]
+
+        div1[:, 1:] = -tmp1[:, 1:] + tmp1[:, :-1]
+        div1[:, 0] = -tmp1[:, 0]
+
+        return div0 + div1
+
 class NegativePoissonLogL:
     def __init__(self, data: npt.NDArray, contamination: npt.NDArray, P: RealLinearOperator) -> None:
         self._data = data
@@ -129,5 +172,19 @@ class NegativePoissonLogL:
     
     def __call__(self, x: npt.NDArray) -> float:
         exp = self._P.forward(x) + self._contamination
-        return xp.sum(exp - self._data * xp.log(exp))
+        return float(xp.sum(exp - self._data * xp.log(exp)))
+
+class L2L1GradientNorm:
+    def __init__(self, beta: float, G: RealLinearOperator) -> None:
+        self._beta = beta
+        self._G = G
+    
+    def __call__(self, x: npt.NDArray) -> float:
+        return self._beta * xp.sum(xp.linalg.vector_norm(G.forward(x), axis=0))
+
+
+def prox_dual_l2l1(y, sigma):
+    gnorm = xp.linalg.vector_norm(y, axis=0)
+    gnorm[gnorm < 1] = 1
+    return y / gnorm
 
