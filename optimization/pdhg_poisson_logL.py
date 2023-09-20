@@ -40,7 +40,7 @@ cost_fct = NegativePoissonLogL(data, contamination, P)
 
 #--------------------------------------------------------------------------------------------------------
 #--------------------------------------------------------------------------------------------------------
-#---- PHDG ----------------------------------------------------------------------------------------------
+#---- PDHG ----------------------------------------------------------------------------------------------
 #--------------------------------------------------------------------------------------------------------
 #--------------------------------------------------------------------------------------------------------
 
@@ -61,7 +61,7 @@ sigma = 1*float(1 / xp.max(x0))
 tau = 0.99 / (sigma * P.norm()**2)
 theta = 1.
 
-cost_arr = np.zeros(num_iter)
+cost_pdhg = np.zeros(num_iter)
 
 for i in range(num_iter):
     # forward step
@@ -79,11 +79,11 @@ for i in range(num_iter):
     x = x_new
 
     # compute cost
-    cost_arr[i] = cost_fct(x)
+    cost_pdhg[i] = cost_fct(x)
 
     if i % 100 == 0:
         delta_rel = float(xp.linalg.vector_norm(delta) / xp.linalg.vector_norm(x))
-        print(f'iteration {i:04} / {num_iter:05} | cost {cost_arr[i]:.7e} | delta_rel {delta_rel:.7e}')
+        print(f'iteration {i:04} / {num_iter:05} | cost {cost_pdhg[i]:.7e} | delta_rel {delta_rel:.7e}')
 
 #--------------------------------------------------------------------------------------------------------
 #--------------------------------------------------------------------------------------------------------
@@ -94,14 +94,14 @@ for i in range(num_iter):
 x_mlem = xp.asarray(x0, copy = True, device=dev)
 sens = P.adjoint(xp.ones_like(data))
 
-cost_arr_mlem = np.zeros(num_iter)
+cost_mlem = np.zeros(num_iter)
 
 for i in range(num_iter):
     exp = P.forward(x_mlem) + contamination
     x_mlem *= (P.adjoint(data / exp) / sens)
 
     # compute cost
-    cost_arr_mlem[i] = cost_fct(x_mlem)
+    cost_mlem[i] = cost_fct(x_mlem)
 
 #--------------------------------------------------------------------------------------------------------
 #--------------------------------------------------------------------------------------------------------
@@ -109,15 +109,21 @@ for i in range(num_iter):
 #--------------------------------------------------------------------------------------------------------
 #--------------------------------------------------------------------------------------------------------
 
-fig, ax = plt.subplots(1, 2, figsize=(8, 4))
-ax[0].plot(cost_arr, label = 'PDHG')
-ax[0].plot(cost_arr_mlem, label = 'MLEM')
-ax[0].legend()
-ax[1].plot(cost_arr)
-ax[1].plot(cost_arr_mlem)
+max_diff = float(xp.max(xp.abs(x - x_mlem)))
 
-cmin = min(cost_arr_mlem.min(), cost_arr.min())
-ymax = cost_arr_mlem[max(min(num_iter-10, 50),0):].max()
+print()
+print(f'max diff between PDHG and MLEM .: {max_diff:.3e}')
+print(f'max x                          .: {float(xp.max(x)):.3e}')
+
+fig, ax = plt.subplots(1, 2, figsize=(8, 4))
+ax[0].plot(cost_pdhg, label = 'PDHG')
+ax[0].plot(cost_mlem, label = 'MLEM')
+ax[0].legend()
+ax[1].plot(cost_pdhg)
+ax[1].plot(cost_mlem)
+
+cmin = min(cost_mlem.min(), cost_pdhg.min())
+ymax = cost_mlem[max(min(num_iter-10, 60),0):].max()
 ax[1].set_ylim(cmin - 0.1*(ymax - cmin), ymax)
 for axx in ax:
     axx.grid(ls = ':')
