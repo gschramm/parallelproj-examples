@@ -1,7 +1,9 @@
 import abc
 import numpy as np
 import numpy.typing as npt
-import numpy.array_api as xp
+import array_api_compat.numpy as xp
+
+from array_api_compat import device
 
 
 class RealLinearOperator(abc.ABC):
@@ -46,6 +48,9 @@ class RealLinearOperator(abc.ABC):
             return self._adjoint(y)
         else:
             return self._adjoint(y) * self._scale
+
+    def __call__(self, x):
+        return self.forward(x)
 
     def norm(self, num_iter=50, dev = 'cpu') -> float:
         """estimate norm of operator via power iterations
@@ -139,7 +144,7 @@ class GradientOperator2D(RealLinearOperator):
         return self._out_shape
  
     def _forward(self, x):
-        g = xp.zeros(self.out_shape, dtype=x.dtype, device=x.device)
+        g = xp.zeros(self.out_shape, dtype=x.dtype, device=device(x))
 
         g[0, :-1, :] = x[1:,:] - x[:-1,:]
         g[1, :, :-1] = x[:,1:] - x[:,:-1]
@@ -153,8 +158,8 @@ class GradientOperator2D(RealLinearOperator):
         tmp1 = xp.asarray(y[1, :, :], copy=True)
         tmp1[:, -1] = 0 
 
-        div0 = xp.zeros(self.in_shape, dtype=y.dtype, device=y.device)
-        div1 = xp.zeros(self.in_shape, dtype=y.dtype, device=y.device)
+        div0 = xp.zeros(self.in_shape, dtype=y.dtype, device=device(y))
+        div1 = xp.zeros(self.in_shape, dtype=y.dtype, device=device(y))
 
         div0[1:, :] = -tmp0[1:,:] + tmp0[:-1,:]
         div0[0,:] = -tmp0[0, :]
@@ -164,15 +169,8 @@ class GradientOperator2D(RealLinearOperator):
 
         return div0 + div1
 
-class NegativePoissonLogL:
-    def __init__(self, data: npt.NDArray, contamination: npt.NDArray, P: RealLinearOperator) -> None:
-        self._data = data
-        self._contamination = contamination
-        self._P = P
-    
-    def __call__(self, x: npt.NDArray) -> float:
-        exp = self._P.forward(x) + self._contamination
-        return float(xp.sum(exp - self._data * xp.log(exp)))
+def negativePoissonLogL(exp, data):
+    return float(xp.sum(exp - data * xp.log(exp)))
 
 class L2L1GradientNorm:
     def __init__(self, beta: float, G: RealLinearOperator) -> None:
