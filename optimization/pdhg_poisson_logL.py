@@ -61,7 +61,6 @@ y_data = 1 - data / (P(x) + contamination)
 
 # for Poisson data it seems that sigma = 1 is not a good choice
 # instead 1/scale(reconstructed image) seems to work better
-#sigma = 1.
 sigma = 1*float(1 / xp.max(x0))
 tau = 0.99 / (sigma * P.norm()**2)
 theta = 1.

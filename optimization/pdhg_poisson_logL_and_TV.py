@@ -6,6 +6,8 @@ from array_api_compat import to_device
 import matplotlib.pyplot as plt
 import parallelproj
 
+from scipy.optimize import fmin_powell, minimize
+
 from utils import negativePoissonLogL, GradientOperator2D, prox_dual_l2l1
 
 np.random.seed(42)
@@ -18,8 +20,8 @@ radial_positions = xp.linspace(-32, 32, 64)
 view_angles = xp.linspace(0, xp.pi, 180, endpoint=False)
 radius = 20
 img_origin = (-15.5, -15.5)
-num_iter = 1000
-count_factor = 500.
+num_iter = 4000
+count_factor = 50.
 beta = 0.1
 
 P = parallelproj.ParallelViewProjector2D(img_shape, radial_positions, view_angles, radius, img_origin, voxel_size)
@@ -107,25 +109,61 @@ for i in range(num_iter):
 
 #--------------------------------------------------------------------------------------------------------
 #--------------------------------------------------------------------------------------------------------
+#---- check against bute force optimization -------------------------------------------------------------
+#--------------------------------------------------------------------------------------------------------
+#--------------------------------------------------------------------------------------------------------
+
+cost_fct_wrapper = lambda z: cost_fct(xp.reshape(z, P.in_shape)) + int(xp.min(z) < 0)*1e6 
+ref = fmin_powell(cost_fct_wrapper, xp.reshape(x, x.size), maxiter = 10).reshape(P.in_shape)
+ref_cost = cost_fct(ref)
+
+print(f'PDHG cost : {cost_pdhg[-1]:.10e}')
+print(f'ref  cost : {ref_cost:.10e}')
+print(f'rel  diff : {((cost_pdhg[-1] - ref_cost) / xp.abs(ref_cost)):.10e}')
+
+RMSE = xp.sqrt(xp.sum((x - ref)**2))
+PSNR = 20 * xp.log10(xp.max(xp.abs(x_true)) / RMSE)
+
+print(f'PSNR PDHG vs ref: {PSNR:.4e}')
+
+#--------------------------------------------------------------------------------------------------------
+#--------------------------------------------------------------------------------------------------------
 #---- show results --------------------------------------------------------------------------------------
 #--------------------------------------------------------------------------------------------------------
 #--------------------------------------------------------------------------------------------------------
 
-fig, ax = plt.subplots(2, 2, figsize=(7, 7))
-ax[0,0].plot(cost_pdhg, label = 'PDHG')
-ax[0,0].legend()
-ax[0,1].plot(cost_pdhg)
+it = xp.arange(1, num_iter + 1)
 
-cmin = min(cost_pdhg.min(), cost_pdhg.min())
-ymax = cost_pdhg[max(min(num_iter-10, 60),0):].max()
-ax[0,1].set_ylim(cmin - 0.1*(ymax - cmin), ymax)
-for axx in ax[0,:]:
+fig, ax = plt.subplots(2, 4, figsize=(12, 6))
+ax[0,0].plot(it, cost_pdhg, label = 'PDHG')
+ax[0,0].legend()
+ax[0,1].plot(it[500:], cost_pdhg[500:])
+ax[0,2].plot(it[-100:], cost_pdhg[-100:])
+ax[0,3].set_axis_off()
+
+for axx in ax[0,:-1]:
     axx.grid(ls = ':')
     axx.set_xlabel('iteration')
     axx.set_ylabel('cost function')
+    axx.axhline(ref_cost, ls = '--', color = 'k')
+for axx in ax[1, :]:
+    axx.set_axis_off()
 
-ax[1,0].imshow(x_true, vmin = 0, vmax = 1.1*xp.max(x_true))
-ax[1,1].imshow(x, vmin = 0, vmax = 1.1*xp.max(x_true))
+im0 = ax[1,0].imshow(x_true, vmin = 0, vmax = 1.1*xp.max(x_true), cmap = 'Greys')
+im1 = ax[1,1].imshow(x, vmin = 0, vmax = 1.1*xp.max(x_true), cmap = 'Greys')
+im2 = ax[1,2].imshow(ref, vmin = 0, vmax = 1.1*xp.max(x_true), cmap = 'Greys')
+dmax = xp.max(xp.abs(x - ref))
+im3 = ax[1,3].imshow(x - ref, cmap = 'seismic', vmin = -dmax, vmax = dmax)
+
+fig.colorbar(im0, ax = ax[1,0], location = 'bottom')
+fig.colorbar(im1, ax = ax[1,1], location = 'bottom')
+fig.colorbar(im2, ax = ax[1,2], location = 'bottom')
+fig.colorbar(im3, ax = ax[1,3], location = 'bottom')
+
+ax[1,0].set_title('ground truth')
+ax[1,1].set_title(f'PHDG {num_iter} it.')
+ax[1,2].set_title('ref')
+ax[1,3].set_title('PDHG - ref')
 
 fig.tight_layout()
 fig.show()
