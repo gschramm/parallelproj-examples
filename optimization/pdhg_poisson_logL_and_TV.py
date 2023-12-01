@@ -1,40 +1,48 @@
 """minimal example of PDHG algorithm for Poisson data fidelity and non-negativity constraint"""
 
 import numpy as np
-import array_api_compat.numpy as xp
+import numpy.array_api as xp
 from array_api_compat import to_device
+from scipy.optimize import fmin_powell
 import matplotlib.pyplot as plt
 import parallelproj
-
-from scipy.optimize import fmin_powell
-
+from parallelproj_utils import DemoPETScannerLORDescriptor, RegularPolygonPETProjector
 from utils import negativePoissonLogL, prox_dual_l2l1
+
 
 np.random.seed(42)
 dev = 'cpu'
 
 # input parameters
-img_shape = (32, 32)
-voxel_size = (1., 1.)
-radial_positions = xp.linspace(-32, 32, 64)
-view_angles = xp.linspace(0, xp.pi, 180, endpoint=False)
-radius = 20
-img_origin = (-15.5, -15.5)
-num_iter = 4000
-count_factor = 50.
-beta = 0.1
+img_shape = (32, 32, 1)
+voxel_size = (4., 4., 4.)
+num_iter = 1000
+count_factor = 100.
 sigma_fac = 1. # by default sigma = sigma_fac / max(P.adjoint(data)) where P is normalized operator
-
+beta = 0.1
 #----------------------------------------------------------------------------------------------------------------
 
-P = parallelproj.ParallelViewProjector2D(img_shape, radial_positions, view_angles, radius, img_origin, voxel_size)
-P.scale = 1.0 / P.norm(xp, dev=dev)
-
 # the ground truth image used to generate the data    
-x_true = count_factor*xp.zeros(P.in_shape, device=dev)
-x_true[8:-8, 8:-8] = count_factor
-x_true[12:-12, 12:-12] = 2*count_factor
+x_true = count_factor*xp.ones(img_shape, device=dev)
+x_true[:2, :, :] = 0
+x_true[-2:, :, :] = 0
+x_true[:, :14, :] = 0
+x_true[:, -14:, :] = 0
 
+# setup an attenuation image
+x_attn = xp.full(img_shape, 0.01)* xp.astype(x_true > 0, xp.float32)
+
+lor_descriptor =  DemoPETScannerLORDescriptor(xp, dev, num_rings=1, radial_trim=221)
+P = RegularPolygonPETProjector(lor_descriptor, img_shape, voxel_size=voxel_size)
+
+# calcuate an attenuation sinogram
+attn_sino = xp.exp(-P(x_attn))
+
+# add the correction for attenuation and resolution to the operator
+P = parallelproj.CompositeLinearOperator((parallelproj.ElementwiseMultiplicationOperator(attn_sino),P, parallelproj.GaussianFilterOperator(img_shape, 0.6)))
+
+# rescale the operator to norm 1
+P.scale = 1.0 / P.norm(xp, dev=dev)
 
 # setup known additive contamination and noise-free data
 noisefree_data = P(x_true)
@@ -78,7 +86,7 @@ sigma = sigma_fac * float(1 / xp.max(x0))
 tau = 0.99 / (sigma * P.norm(xp, dev=dev)**2)
 theta = 1.
 
-cost_pdhg = np.zeros(num_iter)
+cost_pdhg = xp.zeros(num_iter, device = 'cpu')
 
 for i in range(num_iter):
     # forward step
@@ -108,7 +116,7 @@ for i in range(num_iter):
 
     if i % 100 == 0:
         delta_rel = float(xp.linalg.vector_norm(delta) / xp.linalg.vector_norm(x))
-        print(f'iteration {i:04} / {num_iter:05} | cost {cost_pdhg[i]:.7e} | delta_rel {delta_rel:.7e}')
+        print(f'iteration {i:04} / {num_iter:05} | cost {float(cost_pdhg[i]):.7e} | delta_rel {delta_rel:.7e}')
 
 #--------------------------------------------------------------------------------------------------------
 #--------------------------------------------------------------------------------------------------------
@@ -116,16 +124,19 @@ for i in range(num_iter):
 #--------------------------------------------------------------------------------------------------------
 #--------------------------------------------------------------------------------------------------------
 
-cost_fct_wrapper = lambda z: cost_fct(xp.reshape(z, P.in_shape)) + int(xp.min(z) < 0)*1e6 
-ref = fmin_powell(cost_fct_wrapper, xp.reshape(x, x.size), maxiter = 10).reshape(P.in_shape)
+# fmin_powell needs to operate on flat numpy CPU arrays
+x0_powell = np.asarray(to_device(x, 'cpu')).ravel()
+cost_fct_wrapper = lambda z: cost_fct(xp.reshape(xp.asarray(z, device=dev), P.in_shape)) + int(xp.min(xp.asarray(z, device=dev)) < 0)*1e6 
+ref = xp.reshape(xp.asarray(fmin_powell(cost_fct_wrapper, x0_powell, maxiter = 10), device = dev), P.in_shape)
+
 ref_cost = cost_fct(ref)
 
-print(f'PDHG cost : {cost_pdhg[-1]:.10e}')
+print(f'PDHG cost : {float(cost_pdhg[-1]):.10e}')
 print(f'ref  cost : {ref_cost:.10e}')
-print(f'rel  diff : {((cost_pdhg[-1] - ref_cost) / xp.abs(ref_cost)):.10e}')
+print(f'rel  diff : {((float(cost_pdhg[-1]) - ref_cost) / abs(ref_cost)):.10e}')
 
 RMSE = xp.sqrt(xp.sum((x - ref)**2))
-PSNR = 20 * xp.log10(xp.max(xp.abs(x_true)) / RMSE)
+PSNR = 20 * float(xp.log10(xp.max(xp.abs(x_true))) / RMSE)
 
 print(f'PSNR PDHG vs ref: {PSNR:.4e}')
 
@@ -135,13 +146,13 @@ print(f'PSNR PDHG vs ref: {PSNR:.4e}')
 #--------------------------------------------------------------------------------------------------------
 #--------------------------------------------------------------------------------------------------------
 
-it = xp.arange(1, num_iter + 1)
+it = np.arange(1, num_iter + 1)
 
 fig, ax = plt.subplots(2, 4, figsize=(12, 6))
-ax[0,0].plot(it, cost_pdhg, label = 'PDHG')
+ax[0,0].plot(it, np.asarray(to_device(cost_pdhg, 'cpu')), label = 'PDHG')
 ax[0,0].legend()
-ax[0,1].plot(it[500:], cost_pdhg[500:])
-ax[0,2].plot(it[-100:], cost_pdhg[-100:])
+ax[0,1].plot(it[500:], np.asarray(to_device(cost_pdhg[500:], 'cpu')))
+ax[0,2].plot(it[-100:], np.asarray(to_device(cost_pdhg[-100:], 'cpu')))
 ax[0,3].set_axis_off()
 
 for axx in ax[0,:-1]:

@@ -1,7 +1,6 @@
 """minimal example of PDHG algorithm for Poisson data fidelity and non-negativity constraint compared to MLEM"""
 
 import numpy as np
-#import array_api_compat.numpy as xp
 import numpy.array_api as xp
 from array_api_compat import to_device
 import matplotlib.pyplot as plt
