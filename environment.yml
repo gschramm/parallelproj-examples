@@ -1,0 +1,11 @@
+name: parallelproj-examples
+
+channels:
+  - conda-forge
+
+dependencies:
+  - parallelproj>=1.6.1
+  - scipy
+  - ipython
+  - array-api-compat
+  - matplotlib

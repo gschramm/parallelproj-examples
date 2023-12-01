@@ -22,7 +22,7 @@ num_iter = 1000
 count_factor = 500.
 
 P = parallelproj.ParallelViewProjector2D(img_shape, radial_positions, view_angles, radius, img_origin, voxel_size)
-P.scale = 1.0 / P.norm()
+P.scale = 1.0 / P.norm(xp, dev=dev)
 
 # the ground truth image used to generate the data    
 x_true = count_factor*xp.ones(P.in_shape, device=dev)
@@ -62,7 +62,7 @@ y_data = 1 - data / (P(x) + contamination)
 # for Poisson data it seems that sigma = 1 is not a good choice
 # instead 1/scale(reconstructed image) seems to work better
 sigma = 1*float(1 / xp.max(x0))
-tau = 0.99 / (sigma * P.norm()**2)
+tau = 0.99 / (sigma * P.norm(xp, dev=dev)**2)
 theta = 1.
 
 cost_pdhg = np.zeros(num_iter)

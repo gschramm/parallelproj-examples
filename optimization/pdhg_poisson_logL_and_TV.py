@@ -6,9 +6,9 @@ from array_api_compat import to_device
 import matplotlib.pyplot as plt
 import parallelproj
 
-from scipy.optimize import fmin_powell, minimize
+from scipy.optimize import fmin_powell
 
-from utils import negativePoissonLogL, GradientOperator2D, prox_dual_l2l1
+from utils import negativePoissonLogL, prox_dual_l2l1
 
 np.random.seed(42)
 dev = 'cpu'
@@ -25,7 +25,7 @@ count_factor = 50.
 beta = 0.1
 
 P = parallelproj.ParallelViewProjector2D(img_shape, radial_positions, view_angles, radius, img_origin, voxel_size)
-P.scale = 1.0 / P.norm()
+P.scale = 1.0 / P.norm(xp, dev=dev)
 
 # the ground truth image used to generate the data    
 x_true = count_factor*xp.zeros(P.in_shape, device=dev)
@@ -42,9 +42,9 @@ noisefree_data += contamination
 data = xp.asarray(np.random.poisson(to_device(noisefree_data, 'cpu')), device=dev, dtype = x_true.dtype)
 
 # setup gradient operator
-G = GradientOperator2D(img_shape)
+G = parallelproj.FiniteForwardDifference(img_shape)
 # normalize the data operator
-G.scale = 1.0 / G.norm()
+G.scale = 1.0 / G.norm(xp, dev=dev)
 
 # setup the cost function
 data_fidelity = lambda z: negativePoissonLogL(P(z) + contamination, data) 
@@ -72,7 +72,7 @@ y_reg = xp.zeros(G.out_shape, dtype = x.dtype, device=dev)
 # instead 1/scale(reconstructed image) seems to work better
 #sigma = 1.
 sigma = 1*float(1 / xp.max(x0))
-tau = 0.99 / (sigma * P.norm()**2)
+tau = 0.99 / (sigma * P.norm(xp, dev=dev)**2)
 theta = 1.
 
 cost_pdhg = np.zeros(num_iter)
