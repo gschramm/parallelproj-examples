@@ -23,6 +23,9 @@ img_origin = (-15.5, -15.5)
 num_iter = 4000
 count_factor = 50.
 beta = 0.1
+sigma_fac = 1. # by default sigma = sigma_fac / max(P.adjoint(data)) where P is normalized operator
+
+#----------------------------------------------------------------------------------------------------------------
 
 P = parallelproj.ParallelViewProjector2D(img_shape, radial_positions, view_angles, radius, img_origin, voxel_size)
 P.scale = 1.0 / P.norm(xp, dev=dev)
@@ -71,7 +74,7 @@ y_reg = xp.zeros(G.out_shape, dtype = x.dtype, device=dev)
 # for Poisson data it seems that sigma = 1 is not a good choice
 # instead 1/scale(reconstructed image) seems to work better
 #sigma = 1.
-sigma = 1*float(1 / xp.max(x0))
+sigma = sigma_fac * float(1 / xp.max(x0))
 tau = 0.99 / (sigma * P.norm(xp, dev=dev)**2)
 theta = 1.
 
