@@ -4,7 +4,7 @@ channels:
   - conda-forge
 
 dependencies:
-  - parallelproj>=1.6.1
+  - parallelproj>=1.6.2
   - scipy
   - ipython
   - array-api-compat

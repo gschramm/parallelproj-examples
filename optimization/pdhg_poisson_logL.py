@@ -1,39 +1,47 @@
 """minimal example of PDHG algorithm for Poisson data fidelity and non-negativity constraint compared to MLEM"""
 
 import numpy as np
-import array_api_compat.numpy as xp
+#import array_api_compat.numpy as xp
+import numpy.array_api as xp
 from array_api_compat import to_device
 import matplotlib.pyplot as plt
 import parallelproj
-
+from parallelproj_utils import DemoPETScannerLORDescriptor, RegularPolygonPETProjector
 from utils import negativePoissonLogL
 
 np.random.seed(42)
 dev = 'cpu'
 
 # input parameters
-img_shape = (32, 32)
-voxel_size = (1., 1.)
-radial_positions = xp.linspace(-32, 32, 64)
-view_angles = xp.linspace(0, xp.pi, 180, endpoint=False)
-radius = 20
-img_origin = (-15.5, -15.5)
-num_iter = 1000
-count_factor = 500.
+img_shape = (64, 64, 2)
+voxel_size = (4., 4., 4.)
+num_iter = 200
+count_factor = 100.
 sigma_fac = 1. # by default sigma = sigma_fac / max(P.adjoint(data)) where P is normalized operator
 
 #----------------------------------------------------------------------------------------------------------------
 
-P = parallelproj.ParallelViewProjector2D(img_shape, radial_positions, view_angles, radius, img_origin, voxel_size)
-P.scale = 1.0 / P.norm(xp, dev=dev)
-
 # the ground truth image used to generate the data    
-x_true = count_factor*xp.ones(P.in_shape, device=dev)
-x_true[:8, :] = 0
-x_true[-8:, :] = 0
-x_true[:, :8] = 0
-x_true[:, -8:] = 0
+x_true = count_factor*xp.ones(img_shape, device=dev)
+x_true[:8, :, :] = 0
+x_true[-8:, :, :] = 0
+x_true[:, :30, :] = 0
+x_true[:, -30:, :] = 0
 
+# setup an attenuation image
+x_attn = xp.full(img_shape, 0.01)* xp.astype(x_true > 0, xp.float32)
+
+lor_descriptor =  DemoPETScannerLORDescriptor(xp, dev, num_rings=2, radial_trim=181)
+P = RegularPolygonPETProjector(lor_descriptor, img_shape, voxel_size=voxel_size)
+
+# calcuate an attenuation sinogram
+attn_sino = xp.exp(-P(x_attn))
+
+# add the correction for attenuation and resolution to the operator
+P = parallelproj.CompositeLinearOperator((parallelproj.ElementwiseMultiplicationOperator(attn_sino),P, parallelproj.GaussianFilterOperator(img_shape, 0.6)))
+
+# rescale the operator to norm 1
+P.scale = 1.0 / P.norm(xp, dev=dev)
 
 # setup known additive contamination and noise-free data
 noisefree_data = P(x_true)
@@ -116,6 +124,8 @@ for i in range(num_iter):
 #--------------------------------------------------------------------------------------------------------
 #--------------------------------------------------------------------------------------------------------
 
+sl = img_shape[2] // 2
+
 max_diff = float(xp.max(xp.abs(x - x_mlem)))
 
 print()
@@ -137,8 +147,8 @@ for axx in ax[0,:]:
     axx.set_xlabel('iteration')
     axx.set_ylabel('negative Poisson logL')
 
-ax[1,0].imshow(x_true, vmin = 0, vmax = 1.1*xp.max(x_true))
-ax[1,1].imshow(x, vmin = 0, vmax = 1.1*xp.max(x_true))
+ax[1,0].imshow(x_true[:,:,sl], vmin = 0, vmax = 1.1*xp.max(x_true))
+ax[1,1].imshow(x[:,:,sl], vmin = 0, vmax = 1.1*xp.max(x_true))
 
 fig.tight_layout()
 fig.show()
