@@ -1,12 +1,12 @@
-"""minimal example of PDHG algorithm for Poisson data fidelity and non-negativity constraint"""
+"""minimal example of PDHG algorithm for Poisson data fidelity and non-negativity constraint compared to MLEM"""
 
 import numpy as np
 from array_api_compat import to_device
-from scipy.optimize import fmin_powell
 import matplotlib.pyplot as plt
+from scipy.optimize import fmin_powell
 import parallelproj
 from parallelproj_utils import DemoPETScannerLORDescriptor, RegularPolygonPETProjector
-from utils import negativePoissonLogL, prox_dual_l2l1
+from utils import negativePoissonLogL
 
 np.random.seed(42)
 
@@ -14,21 +14,21 @@ import numpy.array_api as xp
 dev = 'cpu'
 
 #import array_api_compat.cupy as xp
-#dev = 'cpu'
+#dev = 'cuda'
 
 # input parameters
 img_shape = (32, 32, 1)
 voxel_size = (4., 4., 4.)
 num_iter = 5000
 count_factor = 100.
-sigma_fac = 1. # by default sigma = sigma_fac / max(P.adjoint(data)) where P is normalized operator
-beta = 0.1
+beta = 0.001
+
 #----------------------------------------------------------------------------------------------------------------
 
 # the ground truth image used to generate the data    
 x_true = count_factor*xp.ones(img_shape, device=dev)
-x_true[:2, :, :] = 0
-x_true[-2:, :, :] = 0
+x_true[:8, :, :] = 0
+x_true[-8:, :, :] = 0
 x_true[:, :14, :] = 0
 x_true[:, -14:, :] = 0
 
@@ -55,71 +55,40 @@ noisefree_data += contamination
 # add Poisson noise to the data
 data = xp.asarray(np.random.poisson(to_device(noisefree_data, 'cpu')), device=dev, dtype = x_true.dtype)
 
-# setup gradient operator
-G = parallelproj.FiniteForwardDifference(img_shape)
-# normalize the data operator
-G.scale = 1.0 / G.norm(xp, dev=dev)
+# setup an intensity prior image
+x_prior = 1.0 * x_true
 
 # setup the cost function
-data_fidelity = lambda z: negativePoissonLogL(P(z) + contamination, data) 
-regularizer = lambda z: float(xp.sum(xp.linalg.vector_norm(G(z), axis=0)))
-cost_fct = lambda z: data_fidelity(z) + beta * regularizer(z)
-
-#--------------------------------------------------------------------------------------------------------
-#--------------------------------------------------------------------------------------------------------
-#---- PDHG ----------------------------------------------------------------------------------------------
-#--------------------------------------------------------------------------------------------------------
-#--------------------------------------------------------------------------------------------------------
-
-# (1) intialize variables x, xbar and y
+cost_fct = lambda z: negativePoissonLogL(P(z) + contamination, data) + 0.5*beta*float(xp.sum((z - x_prior)**2))
 
 # we initialize the images with the adjoint of the data operator
 x0 = P.adjoint(data)
-x = xp.asarray(x0, copy = True, device=dev)
-xbar = xp.asarray(x0, copy = True, device=dev)
-y_data = 1 - data / (P(x) + contamination)
-y_reg = xp.zeros(G.out_shape, dtype = x.dtype, device=dev)
 
-# (2) set the step sizes sigma and tau
+#--------------------------------------------------------------------------------------------------------
+#--------------------------------------------------------------------------------------------------------
+#---- de Pierro recon with quadratic intensity prior ----------------------------------------------------
+#--------------------------------------------------------------------------------------------------------
+#--------------------------------------------------------------------------------------------------------
 
-# for Poisson data it seems that sigma = 1 is not a good choice
-# instead 1/scale(reconstructed image) seems to work better
-#sigma = 1.
-sigma = sigma_fac * float(1 / xp.max(x0))
-tau = 0.99 / (sigma * P.norm(xp, dev=dev)**2)
-theta = 1.
+x_dep = xp.asarray(x0, copy = True, device=dev)
+B = P.adjoint(xp.ones_like(data)) - beta * x_prior
 
-cost_pdhg = xp.zeros(num_iter, device = 'cpu')
+
+
+cost_dep = np.zeros(num_iter)
 
 for i in range(num_iter):
-    # forward step
-    y_data += (sigma * (P(xbar) + contamination))
-    # apply prox of convex conj of Poisson data fidelity
-    y_data = 0.5 * ( y_data + 1 - xp.sqrt((y_data-1)**2 + 4*sigma*data) ) 
+    exp = P(x_dep) + contamination
+    A = x_dep * P.adjoint(data / exp)
 
-    # forward step for data
-    y_reg += (sigma * G(xbar))
-    # apply prox of convex conj of Poisson data fidelity
-    y_reg = beta * prox_dual_l2l1(y_reg / beta, sigma / beta)
-
-
-    # backward step
-    x_new = x - tau * (P.adjoint(y_data) + G.adjoint(y_reg))
-    # prox of G (indicated function of non-negativity constraint) -> projection in non-negative values
-    x_new[x_new < 0] = 0
-
-    # update of xbar
-    delta = x_new - x
-    xbar = x_new + theta*delta
-    # update of x
-    x = x_new
+    x_dep = 2*A / (xp.sqrt(B**2 + 4*beta*A) + B)
 
     # compute cost
-    cost_pdhg[i] = cost_fct(x)
+    cost_dep[i] = cost_fct(x_dep)
 
     if i % 100 == 0:
-        delta_rel = float(xp.linalg.vector_norm(delta) / xp.linalg.vector_norm(x))
-        print(f'PDHG iteration {i:04} / {num_iter:05} | cost {float(cost_pdhg[i]):.7e} | delta_rel {delta_rel:.7e}')
+        print(f'dePierro iteration {i:04} / {num_iter:05} | cost {cost_dep[i]:.7e}')
+
 
 #--------------------------------------------------------------------------------------------------------
 #--------------------------------------------------------------------------------------------------------
@@ -128,20 +97,20 @@ for i in range(num_iter):
 #--------------------------------------------------------------------------------------------------------
 
 # fmin_powell needs to operate on flat numpy CPU arrays
-x0_powell = np.asarray(to_device(x, 'cpu')).ravel()
+x0_powell = np.asarray(to_device(x_dep, 'cpu')).ravel()
 cost_fct_wrapper = lambda z: cost_fct(xp.reshape(xp.asarray(z, device=dev), P.in_shape)) + int(xp.min(xp.asarray(z, device=dev)) < 0)*1e6 
-ref = xp.reshape(xp.asarray(fmin_powell(cost_fct_wrapper, x0_powell, maxiter = 10), device = dev), P.in_shape)
+ref = xp.reshape(xp.asarray(fmin_powell(cost_fct_wrapper, x0_powell, maxiter = 20), device = dev), P.in_shape)
 
 ref_cost = cost_fct(ref)
 
-print(f'PDHG cost : {float(cost_pdhg[-1]):.10e}')
-print(f'ref  cost : {ref_cost:.10e}')
-print(f'rel  diff : {((float(cost_pdhg[-1]) - ref_cost) / abs(ref_cost)):.10e}')
+print(f'dePierro cost : {float(cost_dep[-1]):.10e}')
+print(f'ref      cost : {ref_cost:.10e}')
+print(f'rel      diff : {((float(cost_dep[-1]) - ref_cost) / abs(ref_cost)):.10e}')
 
-RMSE = xp.sqrt(xp.sum((x - ref)**2))
+RMSE = xp.sqrt(xp.sum((x_dep - ref)**2))
 PSNR = 20 * float(xp.log10(xp.max(xp.abs(x_true))) / RMSE)
 
-print(f'PSNR PDHG vs ref: {PSNR:.4e}')
+print(f'PSNR dePierro vs ref: {PSNR:.4e}')
 
 #--------------------------------------------------------------------------------------------------------
 #--------------------------------------------------------------------------------------------------------
@@ -152,10 +121,10 @@ print(f'PSNR PDHG vs ref: {PSNR:.4e}')
 it = np.arange(1, num_iter + 1)
 
 fig, ax = plt.subplots(2, 4, figsize=(12, 6))
-ax[0,0].plot(it, np.asarray(to_device(cost_pdhg, 'cpu')), label = 'PDHG')
+ax[0,0].plot(it, np.asarray(to_device(cost_dep, 'cpu')), label = 'dePierro')
 ax[0,0].legend()
-ax[0,1].plot(it[500:], np.asarray(to_device(cost_pdhg[500:], 'cpu')))
-ax[0,2].plot(it[-100:], np.asarray(to_device(cost_pdhg[-100:], 'cpu')))
+ax[0,1].plot(it[500:], np.asarray(to_device(cost_dep[500:], 'cpu')))
+ax[0,2].plot(it[-100:], np.asarray(to_device(cost_dep[-100:], 'cpu')))
 ax[0,3].set_axis_off()
 
 for axx in ax[0,:-1]:
@@ -167,10 +136,10 @@ for axx in ax[1, :]:
     axx.set_axis_off()
 
 im0 = ax[1,0].imshow(np.asarray(to_device(x_true, 'cpu')), vmin = 0, vmax = 1.1*xp.max(x_true), cmap = 'Greys')
-im1 = ax[1,1].imshow(np.asarray(to_device(x, 'cpu')), vmin = 0, vmax = 1.1*xp.max(x_true), cmap = 'Greys')
+im1 = ax[1,1].imshow(np.asarray(to_device(x_dep, 'cpu')), vmin = 0, vmax = 1.1*xp.max(x_true), cmap = 'Greys')
 im2 = ax[1,2].imshow(np.asarray(to_device(ref, 'cpu')), vmin = 0, vmax = 1.1*xp.max(x_true), cmap = 'Greys')
-dmax = float(xp.max(xp.abs(x - ref)))
-im3 = ax[1,3].imshow(np.asarray(to_device(x - ref, 'cpu')), cmap = 'seismic', vmin = -dmax, vmax = dmax)
+dmax = float(xp.max(xp.abs(x_dep - ref)))
+im3 = ax[1,3].imshow(np.asarray(to_device(x_dep - ref, 'cpu')), cmap = 'seismic', vmin = -dmax, vmax = dmax)
 
 fig.colorbar(im0, ax = ax[1,0], location = 'bottom')
 fig.colorbar(im1, ax = ax[1,1], location = 'bottom')
@@ -178,9 +147,9 @@ fig.colorbar(im2, ax = ax[1,2], location = 'bottom')
 fig.colorbar(im3, ax = ax[1,3], location = 'bottom')
 
 ax[1,0].set_title('ground truth')
-ax[1,1].set_title(f'PHDG {num_iter} it.')
+ax[1,1].set_title(f'dePierro {num_iter} it.')
 ax[1,2].set_title('ref')
-ax[1,3].set_title('PDHG - ref')
+ax[1,3].set_title('dePierro - ref')
 
 fig.tight_layout()
-fig.savefig('fig2.png')
+fig.savefig('fig3.png')
