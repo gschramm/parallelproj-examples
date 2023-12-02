@@ -1,7 +1,6 @@
 """minimal example of PDHG algorithm for Poisson data fidelity and non-negativity constraint compared to MLEM"""
 
 import numpy as np
-import numpy.array_api as xp
 from array_api_compat import to_device
 import matplotlib.pyplot as plt
 import parallelproj
@@ -9,12 +8,17 @@ from parallelproj_utils import DemoPETScannerLORDescriptor, RegularPolygonPETPro
 from utils import negativePoissonLogL
 
 np.random.seed(42)
+
+import numpy.array_api as xp
 dev = 'cpu'
+
+#import array_api_compat.cupy as xp
+#dev = 'cuda'
 
 # input parameters
 img_shape = (64, 64, 2)
 voxel_size = (4., 4., 4.)
-num_iter = 200
+num_iter = 1000
 count_factor = 100.
 sigma_fac = 1. # by default sigma = sigma_fac / max(P.adjoint(data)) where P is normalized operator
 
@@ -97,7 +101,7 @@ for i in range(num_iter):
 
     if i % 100 == 0:
         delta_rel = float(xp.linalg.vector_norm(delta) / xp.linalg.vector_norm(x))
-        print(f'iteration {i:04} / {num_iter:05} | cost {cost_pdhg[i]:.7e} | delta_rel {delta_rel:.7e}')
+        print(f'PDHG iteration {i:04} / {num_iter:05} | cost {cost_pdhg[i]:.7e} | delta_rel {delta_rel:.7e}')
 
 #--------------------------------------------------------------------------------------------------------
 #--------------------------------------------------------------------------------------------------------
@@ -116,6 +120,10 @@ for i in range(num_iter):
 
     # compute cost
     cost_mlem[i] = cost_fct(x_mlem)
+
+    if i % 100 == 0:
+        delta_rel = float(xp.linalg.vector_norm(delta) / xp.linalg.vector_norm(x))
+        print(f'MLEM iteration {i:04} / {num_iter:05} | cost {cost_mlem[i]:.7e}')
 
 #--------------------------------------------------------------------------------------------------------
 #--------------------------------------------------------------------------------------------------------
@@ -146,8 +154,8 @@ for axx in ax[0,:]:
     axx.set_xlabel('iteration')
     axx.set_ylabel('negative Poisson logL')
 
-ax[1,0].imshow(x_true[:,:,sl], vmin = 0, vmax = 1.1*xp.max(x_true))
-ax[1,1].imshow(x[:,:,sl], vmin = 0, vmax = 1.1*xp.max(x_true))
+ax[1,0].imshow(np.asarray(to_device(x_true[:,:,sl], 'cpu')), vmin = 0, vmax = 1.1*xp.max(x_true))
+ax[1,1].imshow(np.asarray(to_device(x[:,:,sl], 'cpu')), vmin = 0, vmax = 1.1*xp.max(x_true))
 
 fig.tight_layout()
-fig.show()
+fig.savefig('fig1.png')

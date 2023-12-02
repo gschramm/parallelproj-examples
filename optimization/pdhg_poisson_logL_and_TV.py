@@ -1,7 +1,6 @@
 """minimal example of PDHG algorithm for Poisson data fidelity and non-negativity constraint"""
 
 import numpy as np
-import numpy.array_api as xp
 from array_api_compat import to_device
 from scipy.optimize import fmin_powell
 import matplotlib.pyplot as plt
@@ -9,14 +8,18 @@ import parallelproj
 from parallelproj_utils import DemoPETScannerLORDescriptor, RegularPolygonPETProjector
 from utils import negativePoissonLogL, prox_dual_l2l1
 
-
 np.random.seed(42)
+
+import numpy.array_api as xp
 dev = 'cpu'
+
+#import array_api_compat.cupy as xp
+#dev = 'cpu'
 
 # input parameters
 img_shape = (32, 32, 1)
 voxel_size = (4., 4., 4.)
-num_iter = 1000
+num_iter = 5000
 count_factor = 100.
 sigma_fac = 1. # by default sigma = sigma_fac / max(P.adjoint(data)) where P is normalized operator
 beta = 0.1
@@ -116,7 +119,7 @@ for i in range(num_iter):
 
     if i % 100 == 0:
         delta_rel = float(xp.linalg.vector_norm(delta) / xp.linalg.vector_norm(x))
-        print(f'iteration {i:04} / {num_iter:05} | cost {float(cost_pdhg[i]):.7e} | delta_rel {delta_rel:.7e}')
+        print(f'PDHG iteration {i:04} / {num_iter:05} | cost {float(cost_pdhg[i]):.7e} | delta_rel {delta_rel:.7e}')
 
 #--------------------------------------------------------------------------------------------------------
 #--------------------------------------------------------------------------------------------------------
@@ -163,11 +166,11 @@ for axx in ax[0,:-1]:
 for axx in ax[1, :]:
     axx.set_axis_off()
 
-im0 = ax[1,0].imshow(x_true, vmin = 0, vmax = 1.1*xp.max(x_true), cmap = 'Greys')
-im1 = ax[1,1].imshow(x, vmin = 0, vmax = 1.1*xp.max(x_true), cmap = 'Greys')
-im2 = ax[1,2].imshow(ref, vmin = 0, vmax = 1.1*xp.max(x_true), cmap = 'Greys')
-dmax = xp.max(xp.abs(x - ref))
-im3 = ax[1,3].imshow(x - ref, cmap = 'seismic', vmin = -dmax, vmax = dmax)
+im0 = ax[1,0].imshow(np.asarray(to_device(x_true, 'cpu')), vmin = 0, vmax = 1.1*xp.max(x_true), cmap = 'Greys')
+im1 = ax[1,1].imshow(np.asarray(to_device(x, 'cpu')), vmin = 0, vmax = 1.1*xp.max(x_true), cmap = 'Greys')
+im2 = ax[1,2].imshow(np.asarray(to_device(ref, 'cpu')), vmin = 0, vmax = 1.1*xp.max(x_true), cmap = 'Greys')
+dmax = float(xp.max(xp.abs(x - ref)))
+im3 = ax[1,3].imshow(np.asarray(to_device(x - ref, 'cpu')), cmap = 'seismic', vmin = -dmax, vmax = dmax)
 
 fig.colorbar(im0, ax = ax[1,0], location = 'bottom')
 fig.colorbar(im1, ax = ax[1,1], location = 'bottom')
@@ -180,4 +183,4 @@ ax[1,2].set_title('ref')
 ax[1,3].set_title('PDHG - ref')
 
 fig.tight_layout()
-fig.show()
+fig.savefig('fig2.png')
